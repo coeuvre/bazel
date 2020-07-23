@@ -217,3 +217,13 @@ tasks:
       - "//src:bazel_jdk_minimal"
     include_json_profile:
       - build
+  kythe_ubuntu2004:
+    shell_commands:
+    - sed -i.bak -e 's/^# android_sdk_repository/android_sdk_repository/' -e 's/^#
+      android_ndk_repository/android_ndk_repository/' WORKSPACE
+    - rm -f WORKSPACE.bak
+    build_flags:
+    - "--define=kythe_corpus=github.com/bazelbuild/bazel"
+    build_targets:
+    - "//src/..."
+    index_targets: true
