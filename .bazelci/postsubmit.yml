@@ -225,5 +225,5 @@ tasks:
     build_flags:
     - "--define=kythe_corpus=github.com/bazelbuild/bazel"
     build_targets:
-    - "//src/..."
+    - "//src:bazel"
     index_targets: true
