@@ -224,5 +224,4 @@ tasks:
     - rm -f WORKSPACE.bak
     index_flags:
     - "--define=kythe_corpus=github.com/bazelbuild/bazel"
-    index_targets:
-    - "//src/..."
+    index_targets_query: "kind(\"cc_(binary|library|test|proto_library) rule\", ...) union kind(\"java_(binary|import|library|plugin|test|proto_library) rule\", ...) union kind(\"proto_library rule\", ...)"
