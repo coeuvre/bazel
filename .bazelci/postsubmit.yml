@@ -8,5 +8,7 @@ tasks:
     index_flags:
     - "--define=kythe_corpus=github.com/bazelbuild/bazel"
     - "--experimental_starlark_cc_import"
-    index_targets_query: "kind(\"cc_(binary|library|test|proto_library) rule\", ...) union kind(\"java_(binary|import|library|plugin|test|proto_library) rule\", ...) union kind(\"proto_library rule\", ...)"
+    index_targets:
+    - "//src:bazel"
+#    index_targets_query: "kind(\"cc_(binary|library|test|proto_library) rule\", ...) union kind(\"java_(binary|import|library|plugin|test|proto_library) rule\", ...) union kind(\"proto_library rule\", ...)"
     index_upload_policy: IfBuildSuccess # Always | IfBuildSuccess | Never
