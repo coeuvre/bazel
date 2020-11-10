@@ -19,6 +19,8 @@ import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.HashingOutputStream;
+import com.google.common.flogger.GoogleLogger;
+import com.google.common.io.Closeables;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -112,6 +114,7 @@ import javax.net.ssl.SSLEngine;
  * <p>The implementation currently does not support transfer encoding chunked.
  */
 public final class HttpCacheClient implements RemoteCacheClient {
+  private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   public static final String AC_PREFIX = "ac/";
   public static final String CAS_PREFIX = "cas/";
@@ -512,9 +515,16 @@ public final class HttpCacheClient implements RemoteCacheClient {
                               if (!dataWritten.get() && authTokenExpired(response)) {
                                 // The error is due to an auth token having expired. Let's try
                                 // again.
-                                refreshCredentials();
-                                getAfterCredentialRefresh(downloadCmd, outerF);
-                                return;
+                                try {
+                                  refreshCredentials();
+                                  getAfterCredentialRefresh(downloadCmd, outerF);
+                                  return;
+                                } catch (IOException e) {
+                                  cause.addSuppressed(e);
+                                } catch (RuntimeException e) {
+                                  logger.atWarning().withCause(e).log("Unexpected exception");
+                                  cause.addSuppressed(e);
+                                }
                               } else if (cacheMiss(response.status())) {
                                 outerF.setException(new CacheNotFoundException(digest));
                                 return;

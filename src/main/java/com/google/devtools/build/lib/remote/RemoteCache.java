@@ -263,7 +263,11 @@ public class RemoteCache implements AutoCloseable {
         new FutureCallback<Void>() {
           @Override
           public void onSuccess(Void aVoid) {
-            outerF.set(bOut.toByteArray());
+            try {
+              outerF.set(bOut.toByteArray());
+            } catch (RuntimeException e) {
+              outerF.setException(e);
+            }
           }
 
           @Override
@@ -453,6 +457,8 @@ public class RemoteCache implements AutoCloseable {
               outerF.set(null);
             } catch (IOException e) {
               outerF.setException(e);
+            } catch (RuntimeException e) {
+              outerF.setException(e);
             }
           }
 
@@ -464,6 +470,8 @@ public class RemoteCache implements AutoCloseable {
               if (t != e) {
                 t.addSuppressed(e);
               }
+            } catch (RuntimeException e) {
+              t.addSuppressed(e);
             } finally {
               outerF.setException(t);
             }

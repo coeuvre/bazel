@@ -73,6 +73,7 @@ import javax.annotation.Nullable;
 @ThreadSafe
 public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder {
   private final CallCredentials credentials;
+
   private final ReferenceCountedChannel channel;
   private final RemoteOptions options;
   private final DigestUtil digestUtil;
@@ -326,7 +327,6 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
                   data.writeTo(out);
                   offset.addAndGet(data.size());
                 } catch (IOException e) {
-                  future.setException(e);
                   // Cancel the call.
                   throw new RuntimeException(e);
                 }
@@ -354,6 +354,8 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
                   out.flush();
                   future.set(null);
                 } catch (IOException e) {
+                  future.setException(e);
+                } catch (RuntimeException e) {
                   future.setException(e);
                 }
               }
