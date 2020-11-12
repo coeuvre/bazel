@@ -3,6 +3,7 @@ package com.google.devtools.build.lib.remote;
 import io.grpc.ClientCall;
 import io.grpc.stub.ClientCalls;
 import io.grpc.stub.StreamObserver;
+import io.reactivex.rxjava3.annotations.CheckReturnValue;
 import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
@@ -14,15 +15,16 @@ public class RxClientCalls {
 
   private RxClientCalls() {}
 
+  @CheckReturnValue
   public static <ReqT, RespT> Single<RespT> rxUnaryCall(
       Single<ClientCall<ReqT, RespT>> clientCallSingle, Single<ReqT> requestSingle) {
-    return clientCallSingle.flatMap(clientCall -> requestSingle
-        .flatMapObservable(
-            request -> RxClientCalls.<RespT>responseObservable((responseObserver) -> {
-              ClientCalls.asyncUnaryCall(clientCall, request, responseObserver);
-            })).singleOrError());
+    return clientCallSingle.flatMap(clientCall -> requestSingle.flatMapObservable(
+        request -> RxClientCalls.<RespT>responseObservable((responseObserver) -> {
+          ClientCalls.asyncUnaryCall(clientCall, request, responseObserver);
+        })).singleOrError());
   }
 
+  @CheckReturnValue
   public static <ReqT, RespT> Single<RespT> rxClientStreamingCall(
       Single<ClientCall<ReqT, RespT>> clientCallSingle, Observable<ReqT> requestObservable) {
     return clientCallSingle
@@ -62,23 +64,21 @@ public class RxClientCalls {
   }
 
   private static <T> Observable<T> responseObservable(Consumer<StreamObserver<T>> consumer) {
-    return Observable.create(emitter -> {
-      consumer.accept(new StreamObserver<T>() {
-        @Override
-        public void onNext(T value) {
-          emitter.onNext(value);
-        }
+    return Observable.create(emitter -> consumer.accept(new StreamObserver<T>() {
+      @Override
+      public void onNext(T value) {
+        emitter.onNext(value);
+      }
 
-        @Override
-        public void onError(Throwable error) {
-          emitter.onError(error);
-        }
+      @Override
+      public void onError(Throwable error) {
+        emitter.onError(error);
+      }
 
-        @Override
-        public void onCompleted() {
-          emitter.onComplete();
-        }
-      });
-    });
+      @Override
+      public void onCompleted() {
+        emitter.onComplete();
+      }
+    }));
   }
 }
