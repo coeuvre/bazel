@@ -6,9 +6,11 @@ import com.google.bytestream.ByteStreamGrpc;
 import com.google.bytestream.ByteStreamGrpc.ByteStreamImplBase;
 import com.google.bytestream.ByteStreamProto.QueryWriteStatusRequest;
 import com.google.bytestream.ByteStreamProto.QueryWriteStatusResponse;
+import io.grpc.Attributes;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.Status;
 import io.grpc.Status.Code;
@@ -18,8 +20,11 @@ import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.annotation.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -73,9 +78,12 @@ public class RxClientCallsTest {
   private final AtomicInteger queryWriteStatusTimes = new AtomicInteger(0);
   private Server fakeServer;
   private ManagedChannel channel;
+  private final AtomicReference<Throwable> rxGlobalThrowable = new AtomicReference<>(null);
 
   @Before
   public final void setUp() throws Exception {
+    RxJavaPlugins.setErrorHandler(rxGlobalThrowable::set);
+
     // Use a mutable service registry for later registering the service impl for each test case.
     fakeServer =
         InProcessServerBuilder.forName(fakeServerName)
@@ -119,21 +127,84 @@ public class RxClientCallsTest {
   }
 
   @After
-  public void tearDown() throws Exception {
+  public void tearDown() throws Throwable {
     channel.shutdown();
 
     fakeServer.shutdownNow();
     fakeServer.awaitTermination();
+
+    // Make sure rxjava didn't receive global errors
+    Throwable t = rxGlobalThrowable.getAndSet(null);
+    if (t != null) {
+      throw t;
+    }
   }
 
-  private ClientCall<QueryWriteStatusRequest, QueryWriteStatusResponse> newQueryWriteStatusClientCall() {
-    return channel.newCall(ByteStreamGrpc.getQueryWriteStatusMethod(), CallOptions.DEFAULT);
+  public static class ClientCallDelegate<ReqT, RespT> extends ClientCall<ReqT, RespT> {
+    private final ClientCall<ReqT, RespT> delegate;
+    private boolean isCancelCalled;
+
+    public ClientCallDelegate(ClientCall<ReqT, RespT> delegate) {
+      this.delegate = delegate;
+    }
+
+    public boolean isCancelCalled() {
+      return isCancelCalled;
+    }
+
+    @Override
+    public void start(Listener<RespT> responseListener, Metadata headers) {
+      delegate.start(responseListener, headers);
+    }
+
+    @Override
+    public void request(int numMessages) {
+      delegate.request(numMessages);
+    }
+
+    @Override
+    public void cancel(@Nullable String message, @Nullable Throwable cause) {
+      isCancelCalled = true;
+      delegate.cancel(message, cause);
+    }
+
+    @Override
+    public void halfClose() {
+      delegate.halfClose();
+    }
+
+    @Override
+    public void sendMessage(ReqT message) {
+      delegate.sendMessage(message);
+    }
+
+    @Override
+    public boolean isReady() {
+      return delegate.isReady();
+    }
+
+    @Override
+    public void setMessageCompression(boolean enabled) {
+      delegate.setMessageCompression(enabled);
+    }
+
+    @Override
+    public Attributes getAttributes() {
+      return delegate.getAttributes();
+    }
+  }
+
+  private ClientCallDelegate<QueryWriteStatusRequest, QueryWriteStatusResponse> newQueryWriteStatusClientCall() {
+    return new ClientCallDelegate<>(
+        channel.newCall(ByteStreamGrpc.getQueryWriteStatusMethod(), CallOptions.DEFAULT));
   }
 
   @Test
   public void rxUnaryCall_smoke() {
+    ClientCallDelegate<QueryWriteStatusRequest, QueryWriteStatusResponse> clientCall =
+        newQueryWriteStatusClientCall();
     Single<ClientCall<QueryWriteStatusRequest, QueryWriteStatusResponse>> clientCallSingle = Single
-        .fromCallable(this::newQueryWriteStatusClientCall);
+        .just(clientCall);
     Single<QueryWriteStatusRequest> requestSingle = Single
         .just(QUERY_WRITE_STATUS_REQUEST_1);
 
@@ -145,6 +216,7 @@ public class RxClientCallsTest {
         .assertValue(QUERY_WRITE_STATUS_RESPONSE_1)
         .assertComplete();
     assertThat(queryWriteStatusTimes.get()).isEqualTo(1);
+    assertThat(clientCall.isCancelCalled()).isFalse();
   }
 
   @SuppressWarnings("CheckReturnValue")
@@ -305,8 +377,29 @@ public class RxClientCallsTest {
 
     responseSingle
         .test()
-        .assertNoErrors()
-        .assertNotComplete();
+        .assertNoValues()
+        .assertNotComplete()
+        .assertNoErrors();
     assertThat(queryWriteStatusTimes.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void rxUnaryCall_dispose_cancelCall() {
+    ClientCallDelegate<QueryWriteStatusRequest, QueryWriteStatusResponse> clientCall =
+        newQueryWriteStatusClientCall();
+    Single<ClientCall<QueryWriteStatusRequest, QueryWriteStatusResponse>> clientCallSingle = Single
+        .just(clientCall);
+    Single<QueryWriteStatusRequest> requestSingle = Single
+        .just(QUERY_WRITE_STATUS_REQUEST_6);
+
+    Single<QueryWriteStatusResponse> responseSingle = RxClientCalls
+        .rxUnaryCall(clientCallSingle, requestSingle);
+
+    responseSingle
+        .test()
+        .dispose();
+
+    assertThat(queryWriteStatusTimes.get()).isEqualTo(1);
+    assertThat(clientCall.isCancelCalled()).isTrue();
   }
 }
