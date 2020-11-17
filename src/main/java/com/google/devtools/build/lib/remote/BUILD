@@ -100,6 +100,7 @@ java_library(
         "//third_party/grpc:grpc-jar",
         "//third_party/protobuf:protobuf_java",
         "//third_party/protobuf:protobuf_java_util",
+        "//third_party:reactive_streams",
         "//third_party:rxjava",
         "@googleapis//:google_bytestream_bytestream_java_grpc",
         "@googleapis//:google_bytestream_bytestream_java_proto",
