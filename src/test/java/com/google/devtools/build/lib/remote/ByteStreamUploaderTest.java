@@ -1376,7 +1376,7 @@ public class ByteStreamUploaderTest {
     withEmptyMetadata.detach(prevContext);
   }
 
-  private static class NoopStreamObserver implements StreamObserver<WriteRequest> {
+  static class NoopStreamObserver implements StreamObserver<WriteRequest> {
     @Override
     public void onNext(WriteRequest writeRequest) {
     }
