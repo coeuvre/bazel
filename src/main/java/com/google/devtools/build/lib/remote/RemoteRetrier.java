@@ -33,7 +33,7 @@ import javax.annotation.Nullable;
 public class RemoteRetrier extends Retrier {
 
   @Nullable
-  private static Status fromException(Exception e) {
+  private static Status fromException(Throwable e) {
     for (Throwable cause = e; cause != null; cause = cause.getCause()) {
       if (cause instanceof StatusRuntimeException) {
         return ((StatusRuntimeException) cause).getStatus();
@@ -42,7 +42,7 @@ public class RemoteRetrier extends Retrier {
     return null;
   }
 
-  public static final Predicate<? super Exception> RETRIABLE_GRPC_ERRORS =
+  public static final Predicate<? super Throwable> RETRIABLE_GRPC_ERRORS =
       e -> {
         Status s = fromException(e);
         if (s == null) {
