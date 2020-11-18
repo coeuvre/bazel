@@ -855,4 +855,53 @@ public class RxClientCallsTest {
     assertThat(clientCall.getCancelTimes()).isEqualTo(0);
     assertThat(requestDisposed.get()).isTrue();
   }
+
+  @Test
+  public void rxStreamingClientCall_serverCompleteBeforeRequestSubscription_requestNotSubscribed() {
+    AtomicBoolean requestSubscribed = new AtomicBoolean(false);
+    ClientCallDelegate<WriteRequest, WriteResponse> clientCall =
+        newWriteClientCall();
+    Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
+        .just(clientCall);
+    Observable<WriteRequest> requestObservable = Observable.<WriteRequest>create(emitter -> {
+      for (WriteRequest request : WRITE_REQUESTS_1) {
+        emitter.onNext(request);
+      }
+    }).doOnSubscribe(d -> {
+      requestSubscribed.set(true);
+    });
+    serviceRegistry.addService(new ByteStreamImplBase() {
+      @Override
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> responseObserver) {
+        writeTimes.getAndIncrement();
+        responseObserver.onNext(
+            WriteResponse.newBuilder().setCommittedSize(totalSize(WRITE_REQUESTS_1)).build());
+        responseObserver.onCompleted();
+        return new StreamObserver<WriteRequest>() {
+          @Override
+          public void onNext(WriteRequest writeRequest) {
+          }
+
+          @Override
+          public void onError(Throwable throwable) {
+          }
+
+          @Override
+          public void onCompleted() {
+          }
+        };
+      }
+    });
+
+    Single<WriteResponse> responseSingle =
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+
+    responseSingle
+        .test()
+        .assertValue(newWriteResponse(totalSize(WRITE_REQUESTS_1)))
+        .assertComplete();
+    assertThat(writeTimes.get()).isEqualTo(1);
+    assertThat(clientCall.getCancelTimes()).isEqualTo(0);
+    assertThat(requestSubscribed.get()).isFalse();
+  }
 }
