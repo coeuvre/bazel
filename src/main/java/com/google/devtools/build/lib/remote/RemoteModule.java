@@ -14,6 +14,8 @@
 
 package com.google.devtools.build.lib.remote;
 
+import static com.google.devtools.build.lib.remote.Retrier.RETRIES_DISABLED;
+
 import build.bazel.remote.execution.v2.DigestFunction;
 import build.bazel.remote.execution.v2.RequestMetadata;
 import build.bazel.remote.execution.v2.ServerCapabilities;
@@ -60,6 +62,7 @@ import com.google.devtools.build.lib.exec.ExecutorBuilder;
 import com.google.devtools.build.lib.exec.ModuleActionContextRegistry;
 import com.google.devtools.build.lib.exec.SpawnStrategyRegistry;
 import com.google.devtools.build.lib.packages.TargetUtils;
+import com.google.devtools.build.lib.remote.RemoteRetrier.ExponentialBackoff;
 import com.google.devtools.build.lib.remote.RemoteServerCapabilities.ServerCapabilitiesRequirement;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.common.RemoteExecutionClient;
@@ -105,7 +108,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
 
-/** RemoteModule provides distributed cache and remote execution for Bazel. */
+/**
+ * RemoteModule provides distributed cache and remote execution for Bazel.
+ */
 public final class RemoteModule extends BlazeModule {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
@@ -150,12 +155,16 @@ public final class RemoteModule extends BlazeModule {
     builder.setDownloaderSupplier(remoteDownloaderSupplier);
   }
 
-  /** Returns whether remote execution should be available. */
+  /**
+   * Returns whether remote execution should be available.
+   */
   public static boolean shouldEnableRemoteExecution(RemoteOptions options) {
     return !Strings.isNullOrEmpty(options.remoteExecutor);
   }
 
-  /** Returns whether remote downloading should be available. */
+  /**
+   * Returns whether remote downloading should be available.
+   */
   private static boolean shouldEnableRemoteDownloader(RemoteOptions options) {
     return !Strings.isNullOrEmpty(options.remoteDownloader);
   }
@@ -495,6 +504,19 @@ public final class RemoteModule extends BlazeModule {
             remoteOptions.remoteTimeout.getSeconds(),
             retrier);
 
+    RxByteStreamClientReferenceCounted rxByteStreamClient = uploader;
+
+    if (remoteOptions.remoteExecutionKeepalive) {
+      RxRemoteRetrier rxRetrier = new RxRemoteRetrier(
+          remoteOptions.remoteMaxRetryAttempts > 0
+              ? () -> new ExponentialBackoff(remoteOptions)
+              : () -> RETRIES_DISABLED,
+          RemoteRetrier.RETRIABLE_GRPC_ERRORS,
+          callCredentialsProvider);
+      rxByteStreamClient = new RxByteStreamUploader(remoteOptions.remoteInstanceName,
+          cacheChannel.retain(), remoteOptions.remoteTimeout.getSeconds(), rxRetrier);
+    }
+
     cacheChannel.release();
     RemoteCacheClient cacheClient =
         new GrpcCacheClient(
@@ -503,8 +525,8 @@ public final class RemoteModule extends BlazeModule {
             remoteOptions,
             retrier,
             digestUtil,
-            uploader.retain());
-    uploader.release();
+            rxByteStreamClient.retain());
+    rxByteStreamClient.release();
     Context requestContext =
         TracingMetadataUtils.contextWithMetadata(buildRequestId, invocationId, "bes-upload");
     buildEventArtifactUploaderFactoryDelegate.init(

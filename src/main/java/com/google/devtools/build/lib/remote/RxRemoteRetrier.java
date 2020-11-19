@@ -1,10 +1,12 @@
 package com.google.devtools.build.lib.remote;
 
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.remote.Retrier.Backoff;
 import io.grpc.CallCredentials;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
@@ -56,8 +58,8 @@ public class RxRemoteRetrier {
           long waitMillis = backoff.nextDelayMillis();
           if (waitMillis >= 0) {
             logger.atWarning().withCause(error).log("Received retriable error, retrying");
-            // TODO(chiwang): Should we use a dedicated scheduler for the timer?
-            return Flowable.timer(waitMillis, TimeUnit.MILLISECONDS);
+            return Flowable.timer(waitMillis, TimeUnit.MILLISECONDS,
+                Schedulers.from(MoreExecutors.directExecutor()));
           }
         }
         return Flowable.error(error);

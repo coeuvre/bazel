@@ -3,6 +3,7 @@ package com.google.devtools.build.lib.remote;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import build.bazel.remote.execution.v2.Digest;
 import com.google.bytestream.ByteStreamGrpc;
 import com.google.bytestream.ByteStreamProto.QueryWriteStatusRequest;
 import com.google.bytestream.ByteStreamProto.QueryWriteStatusResponse;
@@ -10,10 +11,8 @@ import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
-import com.google.common.flogger.GoogleLogger;
 import com.google.common.hash.HashCode;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
-import com.google.devtools.build.lib.remote.Retrier.Backoff;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import io.grpc.Context;
 import io.grpc.StatusRuntimeException;
@@ -32,9 +31,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.concurrent.GuardedBy;
 
-public class RxByteStreamUploader extends AbstractReferenceCounted {
-
-  private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
+/**
+ * A implementation for {@link RxByteStreamClientReferenceCounted}
+ */
+public class RxByteStreamUploader extends AbstractReferenceCounted implements
+    RxByteStreamClientReferenceCounted {
 
   private final String instanceName;
   private final ReferenceCountedChannel channel;
@@ -112,29 +113,16 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
     }
   }
 
-  /**
-   * Uploads a BLOB asynchronously to the remote {@code ByteStream} service. The call returns a
-   * {@link Completable} and only start the upload on subscription.
-   *
-   * <p>Upload is retried in case of retriable error. Retrying is transparent to the user of this
-   * API.
-   *
-   * <p>Trying to upload the same BLOB multiple times concurrently, results in only one upload
-   * being performed. This is transparent to the user of this API.
-   *
-   * @param hash the hash of the data to upload.
-   * @param chunker the data to upload.
-   * @param forceUpload if {@code false} the blob is not uploaded if it has previously been
-   * uploaded, if {@code true} the blob is uploaded.
-   */
-  public Completable uploadBlob(HashCode hash, Chunker chunker, boolean forceUpload) {
+  @Override
+  public Completable upload(Digest digest, Chunker chunker, boolean forceUpload) {
     Context ctx = Context.current();
     RxByteStreamStub stub = newByteStreamStub(ctx);
+    HashCode hash = HashCode.fromString(digest.getHash());
 
     return Completable.defer(() -> {
       synchronized (lock) {
         Observable<Void> upload = uploadsInProgress.computeIfAbsent(hash, key -> {
-          return uploadBlob(stub, key, chunker, forceUpload)
+          return upload(stub, key, chunker, forceUpload)
               .onErrorResumeNext(e -> {
                 if (e instanceof StatusRuntimeException) {
                   return Completable.error(new IOException(e));
@@ -169,7 +157,7 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
     });
   }
 
-  private Completable uploadBlob(RxByteStreamStub stub, HashCode hash, Chunker chunker,
+  private Completable upload(RxByteStreamStub stub, HashCode hash, Chunker chunker,
       boolean forceUpload) {
     return Completable.defer(() -> {
       synchronized (lock) {
@@ -179,8 +167,8 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
       }
 
       UUID uploadId = UUID.randomUUID();
-      long blobSize = chunker.getSize();
-      String resourceName = buildUploadResourceName(instanceName, uploadId, hash, blobSize);
+      long totalSize = chunker.getSize();
+      String resourceName = buildUploadResourceName(instanceName, uploadId, hash, totalSize);
 
       AtomicLong lastCommittedSize = new AtomicLong(0);
       ProgressiveBackoff backoff = new ProgressiveBackoff(retrier::newBackoff);
@@ -195,10 +183,10 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
           })
           .flatMap(ch -> writeAndQueryOnFailure(stub, resourceName, ch, lastCommittedSize, backoff))
           .onErrorResumeNext(error -> {
-            // If the lastCommittedSize we queried from server is equals to blobSize, we assume
+            // If the lastCommittedSize we queried from server is equals to totalSize, we assume
             // the upload is completed
             long committedSize = lastCommittedSize.get();
-            if (committedSize == blobSize) {
+            if (committedSize == totalSize) {
               return Single.just(committedSize);
             } else {
               return Single.error(error);
@@ -206,9 +194,9 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
           })
           .retryWhen(errors -> retrier.retryWhen(errors, backoff))
           .flatMap(committedSize -> {
-            if (committedSize != blobSize) {
+            if (committedSize != totalSize) {
               String message = format("write incomplete: committed_size %d for %d total",
-                  committedSize, blobSize);
+                  committedSize, totalSize);
               return Single.error(new IOException(message));
             }
             return Single.just(committedSize);

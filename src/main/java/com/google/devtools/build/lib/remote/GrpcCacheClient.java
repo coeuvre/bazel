@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static java.lang.String.format;
 
 import build.bazel.remote.execution.v2.ActionCacheGrpc;
 import build.bazel.remote.execution.v2.ActionCacheGrpc.ActionCacheBlockingStub;
@@ -60,6 +61,7 @@ import io.grpc.Status;
 import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import io.reactivex.rxjava3.core.Completable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -80,7 +82,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   private final RemoteOptions options;
   private final DigestUtil digestUtil;
   private final RemoteRetrier retrier;
-  private final ByteStreamUploader uploader;
+  private final RxByteStreamClientReferenceCounted uploader;
   private final int maxMissingBlobsDigestsPerMessage;
 
   private AtomicBoolean closed = new AtomicBoolean();
@@ -92,7 +94,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
       RemoteOptions options,
       RemoteRetrier retrier,
       DigestUtil digestUtil,
-      ByteStreamUploader uploader) {
+      RxByteStreamClientReferenceCounted uploader) {
     this.callCredentialsProvider = callCredentialsProvider;
     this.channel = channel;
     this.options = options;
@@ -385,15 +387,23 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
 
   @Override
   public ListenableFuture<Void> uploadFile(Digest digest, Path path) {
-    return uploader.uploadBlobAsync(
-        digest,
-        Chunker.builder().setInput(digest.getSizeBytes(), path).build(),
-        /* forceUpload= */ true);
+    Completable upload = uploader
+        .upload(digest,
+            Chunker.builder().setInput(digest.getSizeBytes(), path).build(), /* forceUpload= */
+            true)
+        .onErrorResumeNext(error -> Completable
+            .error(new IOException(format("Error while uploading file: %s", path))));
+    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
   }
 
   @Override
   public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    return uploader.uploadBlobAsync(
-        digest, Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true);
+    Completable upload = uploader
+        .upload(digest,
+            Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true)
+        .onErrorResumeNext(error -> Completable.error(new IOException(
+            format("Error while uploading blob with digest '%s/%s'", digest.getHash(),
+                digest.getSizeBytes()))));
+    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
   }
 }

@@ -48,6 +48,7 @@ import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
+import io.reactivex.rxjava3.core.Completable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -70,7 +71,8 @@ import javax.annotation.concurrent.GuardedBy;
  *
  * <p>See {@link ReferenceCounted} for more information on reference counting.
  */
-class ByteStreamUploader extends AbstractReferenceCounted {
+class ByteStreamUploader extends AbstractReferenceCounted implements
+    RxByteStreamClientReferenceCounted {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
@@ -344,6 +346,12 @@ class ByteStreamUploader extends AbstractReferenceCounted {
   @Override
   public ReferenceCounted touch(Object o) {
     return this;
+  }
+
+  @Override
+  public Completable upload(Digest digest, Chunker chunker, boolean forceUpload) {
+    return RxFutures.fromListenableFuture(() -> uploadBlobAsync(digest, chunker, forceUpload),
+        MoreExecutors.directExecutor());
   }
 
   private static class AsyncUpload {

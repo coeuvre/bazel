@@ -26,7 +26,6 @@ import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.FixedBackoff;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.MaybeFailOnceUploadService;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.NoopStreamObserver;
-import com.google.devtools.build.lib.remote.Chunker.Chunk;
 import com.google.devtools.build.lib.remote.Retrier.Backoff;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
@@ -200,7 +199,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -302,7 +301,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -353,7 +352,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -413,7 +412,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should have triggered a single retry, because it made
@@ -440,7 +439,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -464,7 +463,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     // This test should not have triggered any retries.
@@ -496,7 +495,7 @@ public class RxByteStreamUploaderTest {
     for (int i = 0; i < numUploads; i++) {
       final int index = i;
       uploads[i] = withEmptyMetadata
-          .call(() -> uploader.uploadBlob(hashCodes[index], chunkers[index], true));
+          .call(() -> uploader.upload(hashCodes[index], chunkers[index], true));
     }
 
     TestObserver[] uploadTests = new TestObserver[numUploads];
@@ -589,7 +588,7 @@ public class RxByteStreamUploaderTest {
       Digest actionDigest = chunkerEntry.getKey();
       Context ctx = TracingMetadataUtils
           .contextWithMetadata("build-req-id", "command-id", DIGEST_UTIL.asActionKey(actionDigest));
-      uploads.add(ctx.call(() -> uploader.uploadBlob(HashCode.fromString(actionDigest.getHash()),
+      uploads.add(ctx.call(() -> uploader.upload(HashCode.fromString(actionDigest.getHash()),
           chunkerEntry.getValue(), /* forceUpload=*/ true)));
     }
 
@@ -661,7 +660,7 @@ public class RxByteStreamUploaderTest {
           }
         }));
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
   }
@@ -710,8 +709,8 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload1 = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
-    Completable upload2 = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload1 = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload2 = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     TestObserver<Void> uploadTest1 = upload1.test();
     TestObserver<Void> uploadTest1Dup = upload1.test();
@@ -741,7 +740,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertError(e -> {
       assertThat(RemoteRetrierUtils.causedByStatus(e, Code.INTERNAL)).isTrue();
@@ -778,9 +777,9 @@ public class RxByteStreamUploaderTest {
     Chunker chunker2 = Chunker.builder().setInput(blob2).setChunkSize(CHUNK_SIZE).build();
     HashCode hash2 = HashCode.fromString(DIGEST_UTIL.compute(blob2).getHash());
 
-    Completable upload1 = uploader.uploadBlob(hash1, chunker1, true);
-    Completable upload1Dup = uploader.uploadBlob(hash1, chunker1, true);
-    Completable upload2 = uploader.uploadBlob(hash2, chunker2, true);
+    Completable upload1 = uploader.upload(hash1, chunker1, true);
+    Completable upload1Dup = uploader.upload(hash1, chunker1, true);
+    Completable upload2 = uploader.upload(hash2, chunker2, true);
 
     TestObserver<Void> uploadTest1 = upload1.test();
     TestObserver<Void> uploadTest1Dup = upload1Dup.test();
@@ -838,7 +837,7 @@ public class RxByteStreamUploaderTest {
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
     HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
   }
@@ -861,7 +860,7 @@ public class RxByteStreamUploaderTest {
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
     HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     assertThat(numCalls.get()).isEqualTo(1);
@@ -915,7 +914,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     // This should fail
     upload.test().await().assertError(e -> {
@@ -924,7 +923,7 @@ public class RxByteStreamUploaderTest {
       return true;
     });
 
-    upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, false));
+    upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, false));
 
     // This should trigger an upload.
     upload.test().await().assertComplete();
@@ -974,10 +973,10 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
     upload.test().await().assertComplete();
 
-    upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, false));
+    upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, false));
     // This should not trigger an upload.
     upload.test().await().assertComplete();
 
@@ -1021,7 +1020,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     assertThat(refreshTimes.get()).isEqualTo(1);
@@ -1092,7 +1091,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
 
     upload.test().await().assertComplete();
     assertThat(refreshTimes.get()).isEqualTo(1);
