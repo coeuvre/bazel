@@ -112,11 +112,6 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
     }
   }
 
-  /*
-     TODO: Test cases
-        - Cancel
-  */
-
   /**
    * Uploads a BLOB asynchronously to the remote {@code ByteStream} service. The call returns a
    * {@link Completable} and only start the upload on subscription.
@@ -138,19 +133,8 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
 
     return Completable.defer(() -> {
       synchronized (lock) {
-        if (!forceUpload && uploadedBlobs.contains(hash)) {
-          return Completable.complete();
-        }
-
-        Observable<Void> upload = uploadsInProgress.get(hash);
-        if (upload == null) {
-          UUID uploadId = UUID.randomUUID();
-          String resourceName = buildUploadResourceName(instanceName, uploadId, hash,
-              chunker.getSize());
-
-          // Using Single.just here is fine since we ensured that only one upload exists at one
-          // time, we won't access chunker concurrently.
-          upload = uploadBlob(stub, resourceName, Single.just(chunker))
+        Observable<Void> upload = uploadsInProgress.computeIfAbsent(hash, key -> {
+          return uploadBlob(stub, key, chunker, forceUpload)
               .onErrorResumeNext(e -> {
                 if (e instanceof StatusRuntimeException) {
                   return Completable.error(new IOException(e));
@@ -164,61 +148,70 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
                 }
               })
               .doFinally(() -> {
-                // TODO: If subscribe before this lock and after completion, what happens? NEED TEST
-                // TODO: RACE: before this doFinally, after downstream.onComplete
                 synchronized (lock) {
                   uploadsInProgress.remove(hash);
                 }
               })
               .<Void>toObservable()
               .publish()
+              // Convert to RefCount so the upload is automatically started on subscription and
+              // shared among multiple subscriptions. It will also automatically disposed if no one
+              // subscribed.
               .refCount();
+        });
 
-          uploadsInProgress.put(hash, upload);
-        }
-
+        // Upload could complete before downstream subscribe the returned Completable. If it then
+        // subscribe, the RefCount will be increased from 0 to 1 resulting in a resubscription to
+        // Completable returned by {@link #uploadBlob}. So we check the uploadedBlobs with a lock
+        // inside {@link #uploadBlob}.
         return Completable.fromObservable(upload);
       }
     });
   }
 
-  private Completable uploadBlob(RxByteStreamStub stub, String resourceName,
-      Single<Chunker> chunkerSingle) {
+  private Completable uploadBlob(RxByteStreamStub stub, HashCode hash, Chunker chunker,
+      boolean forceUpload) {
     return Completable.defer(() -> {
-      AtomicLong expectedSize = new AtomicLong(0);
+      synchronized (lock) {
+        if (!forceUpload && uploadedBlobs.contains(hash)) {
+          return Completable.complete();
+        }
+      }
+
+      UUID uploadId = UUID.randomUUID();
+      long blobSize = chunker.getSize();
+      String resourceName = buildUploadResourceName(instanceName, uploadId, hash, blobSize);
+
       AtomicLong lastCommittedSize = new AtomicLong(0);
       ProgressiveBackoff backoff = new ProgressiveBackoff(retrier::newBackoff);
 
-      Single<Long> writeResult = chunkerSingle
-          .doOnSuccess(chunker -> {
-            try {
-              chunker.seek(lastCommittedSize.get());
-            } catch (IOException e) {
-              chunker.reset();
+      // Using Single.just here is fine since we ensured that only one upload exists at one
+      // time, we won't access chunker concurrently.
+      Single<Long> writeResult = Single.just(chunker)
+          .doOnSuccess(ch -> {
+            if (ch.getOffset() != lastCommittedSize.get()) {
+              ch.seek(lastCommittedSize.get());
             }
-            expectedSize.set(chunker.getSize());
           })
-          .flatMap(chunker -> writeAndQueryOnFailure(stub, resourceName, chunker, lastCommittedSize,
-              backoff))
+          .flatMap(ch -> writeAndQueryOnFailure(stub, resourceName, ch, lastCommittedSize, backoff))
           .onErrorResumeNext(error -> {
-            // If the lastCommittedSize we queried from server is equals to expectedSize, we assume
+            // If the lastCommittedSize we queried from server is equals to blobSize, we assume
             // the upload is completed
             long committedSize = lastCommittedSize.get();
-            if (committedSize == expectedSize.get()) {
+            if (committedSize == blobSize) {
               return Single.just(committedSize);
             } else {
               return Single.error(error);
             }
           })
           .retryWhen(errors -> retrier.retryWhen(errors, backoff))
-          .doOnSuccess(committedSize -> {
-            long expected = expectedSize.get();
-            if (committedSize != expected) {
-              String message = format(
-                  "write incomplete: committed_size %d for %d total", committedSize,
-                  expected);
-              throw new IOException(message);
+          .flatMap(committedSize -> {
+            if (committedSize != blobSize) {
+              String message = format("write incomplete: committed_size %d for %d total",
+                  committedSize, blobSize);
+              return Single.error(new IOException(message));
             }
+            return Single.just(committedSize);
           });
 
       return Completable.fromSingle(writeResult);
@@ -237,31 +230,27 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
     return write(stub, resourceName, chunker)
         .map(WriteResponse::getCommittedSize)
         .onErrorResumeNext(writeError -> {
-          // TODO(chiwang): we should also return immediately without the query if we were out of
-          //  retry attempts for the underlying backoff.
-          if (retrier.isRetriable(writeError)) {
-            return queryWriteStatus(stub, resourceName)
-                .map(QueryWriteStatusResponse::getCommittedSize)
-                .doOnSuccess(committedSize -> {
-                  if (committedSize > lastCommittedSize.getAndSet(committedSize)) {
-                    // we have made progress on this upload in the last request,
-                    // reset the backoff so that this request has a full deck of retries
-                    backoff.reset();
-                  }
-                })
-                .onErrorResumeNext(queryError -> {
-                  writeError.addSuppressed(queryError);
-                  return Single.error(writeError);
-                })
-                .flatMap(committedSize -> Single.error(writeError));
-          } else {
-            return Single.error(writeError);
-          }
+          return queryWriteStatus(stub, resourceName)
+              .map(QueryWriteStatusResponse::getCommittedSize)
+              .doOnSuccess(committedSize -> {
+                if (committedSize > lastCommittedSize.getAndSet(committedSize)) {
+                  // we have made progress on this upload in the last request,
+                  // reset the backoff so that this request has a full deck of retries
+                  backoff.reset();
+                }
+              })
+              .onErrorResumeNext(queryError -> {
+                writeError.addSuppressed(queryError);
+                return Single.error(writeError);
+              })
+              // Returns the fact that the write is failed
+              .flatMap(committedSize -> Single.error(writeError));
         });
   }
 
-  private Single<WriteResponse> write(RxByteStreamStub stub, String resourceName, Chunker chunker) {
-    Observable<WriteRequest> requestObservable = Observable.create(emitter -> {
+  @VisibleForTesting
+  static Observable<WriteRequest> newRequestObservable(String resourceName, Chunker chunker) {
+    return Observable.create(emitter -> {
       AtomicBoolean cancelled = new AtomicBoolean(false);
       emitter.setCancellable(() -> cancelled.set(true));
 
@@ -286,7 +275,10 @@ public class RxByteStreamUploader extends AbstractReferenceCounted {
         }
       }
     });
-    return stub.write(requestObservable);
+  }
+
+  private Single<WriteResponse> write(RxByteStreamStub stub, String resourceName, Chunker chunker) {
+    return stub.write(newRequestObservable(resourceName, chunker));
   }
 
   private Single<QueryWriteStatusResponse> queryWriteStatus(RxByteStreamStub stub,

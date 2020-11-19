@@ -3,6 +3,7 @@ package com.google.devtools.build.lib.remote;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -20,19 +21,19 @@ import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 import com.google.common.hash.HashCode;
-import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.analysis.BlazeVersionInfo;
 import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.FixedBackoff;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.MaybeFailOnceUploadService;
 import com.google.devtools.build.lib.remote.ByteStreamUploaderTest.NoopStreamObserver;
+import com.google.devtools.build.lib.remote.Chunker.Chunk;
 import com.google.devtools.build.lib.remote.Retrier.Backoff;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
-import com.google.devtools.build.lib.remote.util.TestUtils;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.protobuf.ByteString;
 import io.grpc.BindableService;
+import io.grpc.CallCredentials;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -45,13 +46,19 @@ import io.grpc.ServerInterceptors;
 import io.grpc.ServerServiceDefinition;
 import io.grpc.Status;
 import io.grpc.Status.Code;
+import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
+import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Observer;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,11 +67,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import javax.annotation.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -92,9 +100,11 @@ public class RxByteStreamUploaderTest {
 
   @Mock
   private Retrier.Backoff mockBackoff;
+  private final AtomicReference<Throwable> rxGlobalThrowable = new AtomicReference<>(null);
 
   @Before
   public final void setUp() throws Exception {
+    RxJavaPlugins.setErrorHandler(rxGlobalThrowable::set);
     MockitoAnnotations.initMocks(this);
 
     String serverName = "Server for " + this.getClass();
@@ -104,6 +114,20 @@ public class RxByteStreamUploaderTest {
     withEmptyMetadata =
         TracingMetadataUtils.contextWithMetadata(
             "none", "none", DIGEST_UTIL.asActionKey(Digest.getDefaultInstance()));
+  }
+
+  @After
+  public void tearDown() throws Throwable {
+    channel.shutdownNow();
+    channel.awaitTermination(5, TimeUnit.SECONDS);
+    server.shutdownNow();
+    server.awaitTermination();
+
+    // Make sure rxjava didn't receive global errors
+    Throwable t = rxGlobalThrowable.getAndSet(null);
+    if (t != null) {
+      throw t;
+    }
   }
 
   private static RxRemoteRetrier newRetrier(
@@ -116,15 +140,7 @@ public class RxByteStreamUploaderTest {
 
   private RxByteStreamUploader newUploader(RxRemoteRetrier retrier) {
     return new RxByteStreamUploader(INSTANCE_NAME,
-        new ReferenceCountedChannel(channel), /* callTimeoutSecs= */ 1, retrier);
-  }
-
-  @After
-  public void tearDown() throws Exception {
-    channel.shutdownNow();
-    channel.awaitTermination(5, TimeUnit.SECONDS);
-    server.shutdownNow();
-    server.awaitTermination();
+        new ReferenceCountedChannel(channel), /* callTimeoutSecs= */ 60, retrier);
   }
 
   @Test
@@ -698,11 +714,13 @@ public class RxByteStreamUploaderTest {
     Completable upload2 = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
 
     TestObserver<Void> uploadTest1 = upload1.test();
+    TestObserver<Void> uploadTest1Dup = upload1.test();
     TestObserver<Void> uploadTest2 = upload2.test();
 
     blocker.countDown();
 
     uploadTest1.await().assertComplete();
+    uploadTest1Dup.await().assertComplete();
     uploadTest2.await().assertComplete();
 
     assertThat(numWriteCalls.get()).isEqualTo(1);
@@ -849,5 +867,281 @@ public class RxByteStreamUploaderTest {
     assertThat(numCalls.get()).isEqualTo(1);
   }
 
-  // Dispose in the middle, should stop asking next chunks
+  @Test
+  public void uploadBlob_failedUploads_notDeduplicate() throws Exception {
+    RxRemoteRetrier retrier = newRetrier(() -> Retrier.RETRIES_DISABLED, (e) -> false);
+    RxByteStreamUploader uploader = newUploader(retrier);
+    byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
+    new Random().nextBytes(blob);
+    Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
+    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    AtomicInteger numUploads = new AtomicInteger();
+    serviceRegistry.addService(new ByteStreamImplBase() {
+      boolean failRequest = true;
+
+      @Override
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
+        numUploads.incrementAndGet();
+        return new StreamObserver<WriteRequest>() {
+          long nextOffset = 0;
+
+          @Override
+          public void onNext(WriteRequest writeRequest) {
+            if (failRequest) {
+              streamObserver.onError(Status.UNKNOWN.asException());
+              failRequest = false;
+            } else {
+              nextOffset += writeRequest.getData().size();
+              boolean lastWrite = blob.length == nextOffset;
+              assertThat(writeRequest.getFinishWrite()).isEqualTo(lastWrite);
+            }
+          }
+
+          @Override
+          public void onError(Throwable throwable) {
+            fail("onError should never be called.");
+          }
+
+          @Override
+          public void onCompleted() {
+            assertThat(nextOffset).isEqualTo(blob.length);
+
+            WriteResponse response =
+                WriteResponse.newBuilder().setCommittedSize(nextOffset).build();
+            streamObserver.onNext(response);
+            streamObserver.onCompleted();
+          }
+        };
+      }
+    });
+
+    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+
+    // This should fail
+    upload.test().await().assertError(e -> {
+      assertThat(e).hasCauseThat().isInstanceOf(StatusRuntimeException.class);
+      assertThat(Status.fromThrowable(e.getCause()).getCode()).isEqualTo(Code.UNKNOWN);
+      return true;
+    });
+
+    upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, false));
+
+    // This should trigger an upload.
+    upload.test().await().assertComplete();
+
+    assertThat(numUploads.get()).isEqualTo(2);
+  }
+
+  @Test
+  public void uploadBlob_deduplicationOfUploads() throws Exception {
+    RxRemoteRetrier retrier = newRetrier(() -> mockBackoff, (e) -> true);
+    RxByteStreamUploader uploader = newUploader(retrier);
+    byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
+    new Random().nextBytes(blob);
+    Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
+    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    AtomicInteger numUploads = new AtomicInteger();
+    serviceRegistry.addService(new ByteStreamImplBase() {
+      @Override
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
+        numUploads.incrementAndGet();
+        return new StreamObserver<WriteRequest>() {
+
+          long nextOffset = 0;
+
+          @Override
+          public void onNext(WriteRequest writeRequest) {
+            nextOffset += writeRequest.getData().size();
+            boolean lastWrite = blob.length == nextOffset;
+            assertThat(writeRequest.getFinishWrite()).isEqualTo(lastWrite);
+          }
+
+          @Override
+          public void onError(Throwable throwable) {
+            fail("onError should never be called.");
+          }
+
+          @Override
+          public void onCompleted() {
+            assertThat(nextOffset).isEqualTo(blob.length);
+
+            WriteResponse response =
+                WriteResponse.newBuilder().setCommittedSize(nextOffset).build();
+            streamObserver.onNext(response);
+            streamObserver.onCompleted();
+          }
+        };
+      }
+    });
+
+    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+    upload.test().await().assertComplete();
+
+    upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, false));
+    // This should not trigger an upload.
+    upload.test().await().assertComplete();
+
+    assertThat(numUploads.get()).isEqualTo(1);
+
+    // This test should not have triggered any retries.
+    verifyZeroInteractions(mockBackoff);
+  }
+
+  @Test
+  public void uploadBlob_unauthenticatedError_notRetriedTwice() throws Exception {
+    AtomicInteger refreshTimes = new AtomicInteger();
+    CallCredentialsProvider callCredentialsProvider =
+        new CallCredentialsProvider() {
+          @Nullable
+          @Override
+          public CallCredentials getCallCredentials() {
+            return null;
+          }
+
+          @Override
+          public void refresh() throws IOException {
+            refreshTimes.incrementAndGet();
+          }
+        };
+    RxRemoteRetrier retrier = new RxRemoteRetrier(() -> mockBackoff,
+        RemoteRetrier.RETRIABLE_GRPC_ERRORS, callCredentialsProvider);
+    RxByteStreamUploader uploader = newUploader(retrier);
+    byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
+    new Random().nextBytes(blob);
+    Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
+    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    AtomicInteger numUploads = new AtomicInteger();
+    serviceRegistry.addService(new ByteStreamImplBase() {
+      @Override
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
+        numUploads.incrementAndGet();
+
+        streamObserver.onError(Status.UNAUTHENTICATED.asException());
+        return new NoopStreamObserver();
+      }
+    });
+
+    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+
+    upload.test().await().assertError(IOException.class);
+    assertThat(refreshTimes.get()).isEqualTo(1);
+    assertThat(numUploads.get()).isEqualTo(2);
+    // This test should not have triggered any retries.
+    verifyZeroInteractions(mockBackoff);
+  }
+
+  @Test
+  public void uploadBlob_authenticationError_refresh() throws Exception {
+    AtomicInteger refreshTimes = new AtomicInteger();
+    CallCredentialsProvider callCredentialsProvider =
+        new CallCredentialsProvider() {
+          @Nullable
+          @Override
+          public CallCredentials getCallCredentials() {
+            return null;
+          }
+
+          @Override
+          public void refresh() throws IOException {
+            refreshTimes.incrementAndGet();
+          }
+        };
+    RxRemoteRetrier retrier = new RxRemoteRetrier(() -> mockBackoff,
+        RemoteRetrier.RETRIABLE_GRPC_ERRORS, callCredentialsProvider);
+    RxByteStreamUploader uploader = newUploader(retrier);
+    byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
+    new Random().nextBytes(blob);
+    Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
+    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    AtomicInteger numUploads = new AtomicInteger();
+    serviceRegistry.addService(new ByteStreamImplBase() {
+      @Override
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
+        numUploads.incrementAndGet();
+
+        if (refreshTimes.get() == 0) {
+          streamObserver.onError(Status.UNAUTHENTICATED.asException());
+          return new NoopStreamObserver();
+        }
+
+        return new StreamObserver<WriteRequest>() {
+          long nextOffset = 0;
+
+          @Override
+          public void onNext(WriteRequest writeRequest) {
+            nextOffset += writeRequest.getData().size();
+            boolean lastWrite = blob.length == nextOffset;
+            assertThat(writeRequest.getFinishWrite()).isEqualTo(lastWrite);
+          }
+
+          @Override
+          public void onError(Throwable throwable) {
+            fail("onError should never be called.");
+          }
+
+          @Override
+          public void onCompleted() {
+            assertThat(nextOffset).isEqualTo(blob.length);
+
+            WriteResponse response =
+                WriteResponse.newBuilder().setCommittedSize(nextOffset).build();
+            streamObserver.onNext(response);
+            streamObserver.onCompleted();
+          }
+        };
+      }
+    });
+
+    Completable upload = withEmptyMetadata.call(() -> uploader.uploadBlob(hash, chunker, true));
+
+    upload.test().await().assertComplete();
+    assertThat(refreshTimes.get()).isEqualTo(1);
+    assertThat(numUploads.get()).isEqualTo(2);
+    // This test should not have triggered any retries.
+    verifyZeroInteractions(mockBackoff);
+  }
+
+  @Test
+  public void newRequestObservable_dispose_notAskRemainingChunks() throws Exception {
+    byte[] blob = new byte[CHUNK_SIZE * 10];
+    Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
+    AtomicInteger nextTimes = new AtomicInteger(0);
+    Chunker mockChunker = mock(Chunker.class);
+    when(mockChunker.hasNext()).thenAnswer(invocation -> chunker.hasNext());
+    when(mockChunker.next()).thenAnswer(invocation -> {
+      if (nextTimes.getAndIncrement() != 0) {
+        fail("next() should on be called once");
+      }
+      return chunker.next();
+    });
+    Observable<WriteRequest> requestObservable = RxByteStreamUploader
+        .newRequestObservable(INSTANCE_NAME, mockChunker);
+
+    requestObservable.subscribe(new Observer<WriteRequest>() {
+      private Disposable disposable;
+
+      @Override
+      public void onSubscribe(@NonNull Disposable d) {
+        disposable = d;
+      }
+
+      @Override
+      public void onNext(@NonNull WriteRequest writeRequest) {
+        assertThat(writeRequest.getResourceName()).isEqualTo(INSTANCE_NAME);
+        assertThat(writeRequest.getWriteOffset()).isEqualTo(0);
+        assertThat(writeRequest.getData().size()).isEqualTo(CHUNK_SIZE);
+        disposable.dispose();
+      }
+
+      @Override
+      public void onError(@NonNull Throwable e) {
+        fail("onError should never be called");
+      }
+
+      @Override
+      public void onComplete() {
+        fail("onComplete should never be called");
+      }
+    });
+  }
 }

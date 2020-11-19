@@ -41,7 +41,7 @@ import java.util.function.Supplier;
  * case of error or when a data source does not get fully consumed, a user must call
  * {@link #reset()} manually.
  */
-public final class Chunker {
+public class Chunker {
 
   private static int defaultChunkSize = 1024 * 16;
 
