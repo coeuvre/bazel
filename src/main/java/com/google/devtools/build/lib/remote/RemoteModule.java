@@ -504,7 +504,7 @@ public final class RemoteModule extends BlazeModule {
             remoteOptions.remoteTimeout.getSeconds(),
             retrier);
 
-    RxByteStreamClientReferenceCounted rxByteStreamClient = uploader;
+    RxByteStreamClient rxByteStreamClient = uploader;
 
     if (remoteOptions.remoteExecutionKeepalive) {
       RxRemoteRetrier rxRetrier = new RxRemoteRetrier(

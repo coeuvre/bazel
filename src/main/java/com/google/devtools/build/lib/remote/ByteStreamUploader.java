@@ -71,8 +71,7 @@ import javax.annotation.concurrent.GuardedBy;
  *
  * <p>See {@link ReferenceCounted} for more information on reference counting.
  */
-class ByteStreamUploader extends AbstractReferenceCounted implements
-    RxByteStreamClientReferenceCounted {
+class ByteStreamUploader extends AbstractReferenceCounted implements RxByteStreamClient {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 

@@ -32,10 +32,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.concurrent.GuardedBy;
 
 /**
- * A implementation for {@link RxByteStreamClientReferenceCounted}
+ * A implementation for {@link RxByteStreamClient}
  */
-public class RxByteStreamUploader extends AbstractReferenceCounted implements
-    RxByteStreamClientReferenceCounted {
+public class RxByteStreamUploader extends AbstractReferenceCounted implements RxByteStreamClient {
 
   private final String instanceName;
   private final ReferenceCountedChannel channel;

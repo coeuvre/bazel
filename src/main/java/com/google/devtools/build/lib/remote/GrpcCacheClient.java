@@ -82,7 +82,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   private final RemoteOptions options;
   private final DigestUtil digestUtil;
   private final RemoteRetrier retrier;
-  private final RxByteStreamClientReferenceCounted uploader;
+  private final RxByteStreamClient uploader;
   private final int maxMissingBlobsDigestsPerMessage;
 
   private AtomicBoolean closed = new AtomicBoolean();
@@ -94,7 +94,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
       RemoteOptions options,
       RemoteRetrier retrier,
       DigestUtil digestUtil,
-      RxByteStreamClientReferenceCounted uploader) {
+      RxByteStreamClient uploader) {
     this.callCredentialsProvider = callCredentialsProvider;
     this.channel = channel;
     this.options = options;
