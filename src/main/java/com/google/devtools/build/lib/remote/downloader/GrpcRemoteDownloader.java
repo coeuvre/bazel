@@ -25,9 +25,12 @@ import com.google.common.base.Strings;
 import com.google.devtools.build.lib.bazel.repository.downloader.Checksum;
 import com.google.devtools.build.lib.bazel.repository.downloader.Downloader;
 import com.google.devtools.build.lib.bazel.repository.downloader.HashOutputStream;
+import com.google.devtools.build.lib.bazel.repository.downloader.HttpDownloader;
+import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.remote.ReferenceCountedChannel;
 import com.google.devtools.build.lib.remote.RemoteRetrier;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
@@ -64,6 +67,7 @@ public class GrpcRemoteDownloader implements AutoCloseable, Downloader {
   private final Context requestCtx;
   private final RemoteCacheClient cacheClient;
   private final RemoteOptions options;
+  private final HttpDownloader httpDownloader = new HttpDownloader();
 
   private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -127,6 +131,10 @@ public class GrpcRemoteDownloader implements AutoCloseable, Downloader {
                   }));
     } catch (StatusRuntimeException e) {
       throw new IOException(e);
+    } catch (CacheNotFoundException e) {
+      eventHandler.handle(Event.warn("Reading from Remote Cache: " + e.getMessage()));
+      httpDownloader.download(urls, authHeaders, checksum, canonicalId, destination, eventHandler,
+          clientEnv, type);
     }
   }
 
