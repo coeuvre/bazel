@@ -15,6 +15,8 @@ import com.google.common.hash.HashCode;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import io.grpc.Context;
+import io.grpc.Status;
+import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
@@ -142,7 +144,7 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
               .<Void>toObservable()
               .publish()
               // Convert to RefCount so the upload is automatically started on subscription and
-              // shared among multiple subscriptions. It will also automatically disposed if no one
+              // shared among multiple subscriptions. It will also automatically dispose if no one
               // subscribed.
               .refCount();
         });
@@ -216,23 +218,35 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
       Chunker chunker, AtomicLong lastCommittedSize, ProgressiveBackoff backoff) {
     return write(stub, resourceName, chunker)
         .map(WriteResponse::getCommittedSize)
-        .onErrorResumeNext(writeError -> {
-          return queryWriteStatus(stub, resourceName)
-              .map(QueryWriteStatusResponse::getCommittedSize)
-              .doOnSuccess(committedSize -> {
-                if (committedSize > lastCommittedSize.getAndSet(committedSize)) {
-                  // we have made progress on this upload in the last request,
-                  // reset the backoff so that this request has a full deck of retries
-                  backoff.reset();
-                }
-              })
-              .onErrorResumeNext(queryError -> {
-                writeError.addSuppressed(queryError);
-                return Single.error(writeError);
-              })
-              // Returns the fact that the write is failed
-              .flatMap(committedSize -> Single.error(writeError));
-        });
+        .doOnSuccess(lastCommittedSize::set)
+        .onErrorResumeNext(writeError ->
+            query(stub, resourceName, lastCommittedSize, backoff, writeError));
+  }
+
+  private Single<Long> query(RxByteStreamStub stub, String resourceName,
+      AtomicLong lastCommittedSize, ProgressiveBackoff backoff, Throwable writeError) {
+    return queryWriteStatus(stub, resourceName)
+        .map(QueryWriteStatusResponse::getCommittedSize)
+        .onErrorResumeNext(queryError -> {
+          Status status = Status.fromThrowable(queryError);
+          if (status.getCode() == Code.UNIMPLEMENTED) {
+            // if the bytestream server does not implement the query, insist
+            // that we should reset the upload
+            return Single.just(0L);
+          } else {
+            writeError.addSuppressed(queryError);
+            return Single.error(writeError);
+          }
+        })
+        .doOnSuccess(committedSize -> {
+          if (committedSize > lastCommittedSize.getAndSet(committedSize)) {
+            // we have made progress on this upload in the last request,
+            // reset the backoff so that this request has a full deck of retries
+            backoff.reset();
+          }
+        })
+        // Returns the fact that the write is failed
+        .flatMap(committedSize -> Single.error(writeError));
   }
 
   @VisibleForTesting
