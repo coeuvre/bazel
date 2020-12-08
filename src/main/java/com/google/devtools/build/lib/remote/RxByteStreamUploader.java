@@ -21,6 +21,7 @@ import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import java.io.IOException;
@@ -251,31 +252,27 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
 
   @VisibleForTesting
   static Observable<WriteRequest> newRequestObservable(String resourceName, Chunker chunker) {
-    return Observable.create(emitter -> {
-      AtomicBoolean cancelled = new AtomicBoolean(false);
-      emitter.setCancellable(() -> cancelled.set(true));
-
-      boolean isFirst = true;
-      while (!cancelled.get()) {
-        if (chunker.hasNext()) {
-          WriteRequest.Builder requestBuilder = WriteRequest.newBuilder();
-          if (isFirst) {
-            requestBuilder.setResourceName(resourceName);
-            isFirst = false;
+    return Observable.create(
+        emitter -> {
+          boolean isFirst = true;
+          while (!emitter.isDisposed() && chunker.hasNext()) {
+            WriteRequest.Builder requestBuilder = WriteRequest.newBuilder();
+            if (isFirst) {
+              requestBuilder.setResourceName(resourceName);
+              isFirst = false;
+            }
+            Chunker.Chunk chunk = chunker.next();
+            WriteRequest request =
+                requestBuilder
+                    .setWriteOffset(chunk.getOffset())
+                    .setData(chunk.getData())
+                    .setFinishWrite(!chunker.hasNext())
+                    .build();
+            emitter.onNext(request);
           }
-          Chunker.Chunk chunk = chunker.next();
-          WriteRequest request = requestBuilder
-              .setWriteOffset(chunk.getOffset())
-              .setData(chunk.getData())
-              .setFinishWrite(!chunker.hasNext())
-              .build();
-          emitter.onNext(request);
-        } else {
+
           emitter.onComplete();
-          break;
-        }
-      }
-    });
+        });
   }
 
   private Single<WriteResponse> write(RxByteStreamStub stub, String resourceName, Chunker chunker) {
