@@ -20,17 +20,14 @@ import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
-import io.reactivex.rxjava3.core.Completable;
-import io.reactivex.rxjava3.core.Flowable;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.*;
+
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -250,33 +247,45 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
         .flatMap(committedSize -> Single.error(writeError));
   }
 
-  @VisibleForTesting
-  static Observable<WriteRequest> newRequestObservable(String resourceName, Chunker chunker) {
-    return Observable.create(
-        emitter -> {
-          boolean isFirst = true;
-          while (!emitter.isDisposed() && chunker.hasNext()) {
-            WriteRequest.Builder requestBuilder = WriteRequest.newBuilder();
-            if (isFirst) {
-              requestBuilder.setResourceName(resourceName);
-              isFirst = false;
-            }
-            Chunker.Chunk chunk = chunker.next();
-            WriteRequest request =
-                requestBuilder
-                    .setWriteOffset(chunk.getOffset())
-                    .setData(chunk.getData())
-                    .setFinishWrite(!chunker.hasNext())
-                    .build();
-            emitter.onNext(request);
-          }
+  static class WriteRequestGenerator {
+    private final String resourceName;
+    private final Chunker chunker;
+    private boolean isFirst = true;
 
-          emitter.onComplete();
-        });
+    WriteRequestGenerator(String resourceName, Chunker chunker) {
+      this.resourceName = resourceName;
+      this.chunker = chunker;
+    }
+
+    void generate(Emitter<WriteRequest> emitter) throws IOException {
+      if (chunker.hasNext()) {
+        WriteRequest.Builder requestBuilder = WriteRequest.newBuilder();
+        if (isFirst) {
+          requestBuilder.setResourceName(resourceName);
+          isFirst = false;
+        }
+        Chunker.Chunk chunk = chunker.next();
+        WriteRequest request =
+            requestBuilder
+                .setWriteOffset(chunk.getOffset())
+                .setData(chunk.getData())
+                .setFinishWrite(!chunker.hasNext())
+                .build();
+        emitter.onNext(request);
+      } else {
+        emitter.onComplete();
+      }
+    }
+  }
+
+  @VisibleForTesting
+  static Flowable<WriteRequest> newRequestFlowable(String resourceName, Chunker chunker) {
+    return Flowable.generate(
+        () -> new WriteRequestGenerator(resourceName, chunker), WriteRequestGenerator::generate);
   }
 
   private Single<WriteResponse> write(RxByteStreamStub stub, String resourceName, Chunker chunker) {
-    return stub.write(newRequestObservable(resourceName, chunker));
+    return stub.write(newRequestFlowable(resourceName, chunker));
   }
 
   private Single<QueryWriteStatusResponse> queryWriteStatus(RxByteStreamStub stub,

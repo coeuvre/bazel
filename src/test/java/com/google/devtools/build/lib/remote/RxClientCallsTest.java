@@ -23,14 +23,20 @@ import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
-import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.annotations.NonNull;
+import io.reactivex.rxjava3.core.BackpressureStrategy;
+import io.reactivex.rxjava3.core.Emitter;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.functions.BiConsumer;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
+
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -80,7 +86,7 @@ public class RxClientCallsTest {
       .build();
 
   private static final WriteRequest[] WRITE_REQUESTS_1 = newWriteRequests("request1", "chunk1",
-      "chunk2");
+      "chunk2", "chunk3");
 
   private static final WriteRequest[] WRITE_REQUESTS_2 = newWriteRequests("request2", "chunk1",
       "chunk2");
@@ -551,10 +557,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_1);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_1);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -573,19 +579,19 @@ public class RxClientCallsTest {
           clientCallSingleTimes.addAndGet(1);
           return newWriteClientCall();
         });
-    AtomicInteger requestObservableTimes = new AtomicInteger(0);
-    Observable<WriteRequest> requestObservable = Observable.create(emitter -> {
-      requestObservableTimes.addAndGet(1);
+    AtomicInteger requestFlowableTimes = new AtomicInteger(0);
+    Flowable<WriteRequest> requestFlowable = Flowable.create(emitter -> {
+      requestFlowableTimes.addAndGet(1);
       for (WriteRequest request : WRITE_REQUESTS_1) {
         emitter.onNext(request);
       }
       emitter.onComplete();
-    });
+    }, BackpressureStrategy.BUFFER);
 
-    RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+    RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     assertThat(clientCallSingleTimes.get()).isEqualTo(0);
-    assertThat(requestObservableTimes.get()).isEqualTo(0);
+    assertThat(requestFlowableTimes.get()).isEqualTo(0);
     assertThat(writeTimes.get()).isEqualTo(0);
   }
 
@@ -593,10 +599,10 @@ public class RxClientCallsTest {
   public void rxStreamingClientCall_multipleSubscriptions() {
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .fromCallable(this::newWriteClientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_1);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_1);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle.blockingSubscribe();
     responseSingle.blockingSubscribe();
@@ -608,10 +614,10 @@ public class RxClientCallsTest {
     Exception error = new IOException("test error");
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .error(error);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_1);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_1);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -626,10 +632,10 @@ public class RxClientCallsTest {
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
     Exception error = new IOException("test error");
-    Observable<WriteRequest> requestObservable = Observable.error(error);
+    Flowable<WriteRequest> requestFlowable = Flowable.error(error);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -645,13 +651,13 @@ public class RxClientCallsTest {
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
     Exception error = new IOException("test error");
-    Observable<WriteRequest> requestObservable = Observable.create(emitter -> {
+    Flowable<WriteRequest> requestFlowable = Flowable.create(emitter -> {
       emitter.onNext(WRITE_REQUESTS_1[0]);
       emitter.onError(error);
-    });
+    }, BackpressureStrategy.BUFFER);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -666,10 +672,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_2);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_2);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -689,10 +695,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_3);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_3);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -712,10 +718,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_4);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_4);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -735,10 +741,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_5);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_5);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -758,10 +764,10 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.fromArray(WRITE_REQUESTS_6);
+    Flowable<WriteRequest> requestFlowable = Flowable.fromArray(WRITE_REQUESTS_6);
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -779,16 +785,16 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.<WriteRequest>create(emitter -> {
+    Flowable<WriteRequest> requestFlowable = Flowable.<WriteRequest>create(emitter -> {
       for (WriteRequest request : WRITE_REQUESTS_6) {
         emitter.onNext(request);
       }
-    }).doOnDispose(() -> {
+    }, BackpressureStrategy.BUFFER).doOnCancel(() -> {
       requestDisposed.set(true);
     });
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -805,16 +811,16 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.<WriteRequest>create(emitter -> {
+    Flowable<WriteRequest> requestFlowable = Flowable.<WriteRequest>create(emitter -> {
       for (WriteRequest request : WRITE_REQUESTS_2) {
         emitter.onNext(request);
       }
-    }).doOnDispose(() -> {
+    }, BackpressureStrategy.BUFFER).doOnCancel(() -> {
       requestDisposed.set(true);
     });
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -836,16 +842,16 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.<WriteRequest>create(emitter -> {
+    Flowable<WriteRequest> requestFlowable = Flowable.<WriteRequest>create(emitter -> {
       for (WriteRequest request : WRITE_REQUESTS_1) {
         emitter.onNext(request);
       }
-    }).doOnDispose(() -> {
+    }, BackpressureStrategy.BUFFER).doOnCancel(() -> {
       requestDisposed.set(true);
     });
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -863,11 +869,11 @@ public class RxClientCallsTest {
         newWriteClientCall();
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single
         .just(clientCall);
-    Observable<WriteRequest> requestObservable = Observable.<WriteRequest>create(emitter -> {
+    Flowable<WriteRequest> requestFlowable = Flowable.<WriteRequest>create(emitter -> {
       for (WriteRequest request : WRITE_REQUESTS_1) {
         emitter.onNext(request);
       }
-    }).doOnSubscribe(d -> {
+    }, BackpressureStrategy.BUFFER).doOnSubscribe(d -> {
       requestSubscribed.set(true);
     });
     serviceRegistry.addService(new ByteStreamImplBase() {
@@ -894,7 +900,7 @@ public class RxClientCallsTest {
     });
 
     Single<WriteResponse> responseSingle =
-        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestObservable);
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
 
     responseSingle
         .test()
@@ -903,5 +909,82 @@ public class RxClientCallsTest {
     assertThat(writeTimes.get()).isEqualTo(1);
     assertThat(clientCall.getCancelTimes()).isEqualTo(0);
     assertThat(requestSubscribed.get()).isFalse();
+  }
+
+  static class ArrayGenerator<T> {
+    private final T[] array;
+    private int index = 0;
+
+    ArrayGenerator(T[] array) {
+      this.array = array;
+    }
+
+    void generate(Emitter<T> emitter) {
+        if (index < array.length) {
+            emitter.onNext(array[index++]);
+        } else {
+          emitter.onComplete();
+        }
+    }
+
+    int generated() {
+      return index;
+    }
+  }
+
+  @Test
+  public void rxStreamingClientCall_generateRequestOneByOne() {
+    int prefetch = Flowable.bufferSize();
+    int stop = prefetch * 2;
+    int count = prefetch * 3;
+    String[] chunks = new String[count];
+    for (int i = 0; i < count; ++i) {
+        chunks[i] = "chunk" + (i + 1);
+    }
+    WriteRequest[] writeRequests = newWriteRequests("request1", chunks);
+    ClientCallDelegate<WriteRequest, WriteResponse> clientCall = newWriteClientCall();
+    Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle = Single.just(clientCall);
+    ArrayGenerator<WriteRequest> generator = new ArrayGenerator<>(writeRequests);
+    Flowable<WriteRequest> requestFlowable =
+        Flowable.generate(() -> generator, ArrayGenerator<WriteRequest>::generate);
+    serviceRegistry.addService(
+        new ByteStreamImplBase() {
+          @Override
+          public StreamObserver<WriteRequest> write(
+              StreamObserver<WriteResponse> responseObserver) {
+            writeTimes.getAndIncrement();
+            return new StreamObserver<WriteRequest>() {
+              int requestCount;
+              @Override
+              public void onNext(WriteRequest writeRequest) {
+                  ++requestCount;
+                  if (requestCount >= stop) {
+                    responseObserver.onNext(
+                            WriteResponse.newBuilder()
+                                    .setCommittedSize(totalSize(writeRequests))
+                                    .build());
+                    responseObserver.onCompleted();
+                  }
+              }
+
+              @Override
+              public void onError(Throwable throwable) {}
+
+              @Override
+              public void onCompleted() {}
+            };
+          }
+        });
+
+    Single<WriteResponse> responseSingle =
+        RxClientCalls.rxClientStreamingCall(clientCallSingle, requestFlowable);
+
+    responseSingle
+        .test()
+        .assertValue(newWriteResponse(totalSize(writeRequests)))
+        .assertComplete();
+    assertThat(generator.generated()).isEqualTo(stop);
+    assertThat(writeTimes.get()).isEqualTo(1);
+    assertThat(clientCall.getCancelTimes()).isEqualTo(0);
   }
 }

@@ -7,6 +7,7 @@ import com.google.bytestream.ByteStreamProto.QueryWriteStatusResponse;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import io.grpc.ClientCall;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 
@@ -26,7 +27,7 @@ public class RxByteStreamStub {
     return RxClientCalls.rxUnaryCall(clientCallSingle, requestSingle);
   }
 
-  public Single<WriteResponse> write(Observable<WriteRequest> requestObservable) {
+  public Single<WriteResponse> write(Flowable<WriteRequest> requestObservable) {
     Single<ClientCall<WriteRequest, WriteResponse>> clientCallSingle =
         byteStreamStubSingle.map(stub -> stub.getChannel()
             .newCall(ByteStreamGrpc.getWriteMethod(), stub.getCallOptions()));

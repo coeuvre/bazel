@@ -53,6 +53,7 @@ import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
 import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -79,6 +80,8 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.reactivestreams.Subscriber;
+import org.reactivestreams.Subscription;
 
 /**
  * Tests for {@link RxByteStreamUploader}. Test cases migrated from {@link ByteStreamUploaderTest}.
@@ -1113,15 +1116,15 @@ public class RxByteStreamUploaderTest {
       }
       return chunker.next();
     });
-    Observable<WriteRequest> requestObservable = RxByteStreamUploader
-        .newRequestObservable(INSTANCE_NAME, mockChunker);
+    Flowable<WriteRequest> requestFlowable = RxByteStreamUploader
+        .newRequestFlowable(INSTANCE_NAME, mockChunker);
 
-    requestObservable.subscribe(new Observer<WriteRequest>() {
-      private Disposable disposable;
+    requestFlowable.subscribe(new Subscriber<WriteRequest>() {
+      private Subscription subscription;
 
       @Override
-      public void onSubscribe(@NonNull Disposable d) {
-        disposable = d;
+      public void onSubscribe(Subscription s) {
+          subscription = s;
       }
 
       @Override
@@ -1129,7 +1132,7 @@ public class RxByteStreamUploaderTest {
         assertThat(writeRequest.getResourceName()).isEqualTo(INSTANCE_NAME);
         assertThat(writeRequest.getWriteOffset()).isEqualTo(0);
         assertThat(writeRequest.getData().size()).isEqualTo(CHUNK_SIZE);
-        disposable.dispose();
+        subscription.cancel();
       }
 
       @Override

@@ -9,13 +9,15 @@ import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import io.reactivex.rxjava3.annotations.CheckReturnValue;
 import io.reactivex.rxjava3.annotations.NonNull;
-import io.reactivex.rxjava3.annotations.Nullable;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.ObservableEmitter;
-import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.core.Single;
-import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.subscribers.DisposableSubscriber;
+import org.reactivestreams.Subscriber;
+
+import javax.annotation.Nullable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -76,49 +78,48 @@ public class RxClientCalls {
    *
    * @param clientCallSingle a {@link Single} which will return the {@link ClientCall} on
    * subscription.
-   * @param requestObservable a {@link Observable} which will return a stream of request messages of
+   * @param requestFlowable a {@link Flowable} which will return a stream of request messages of
    * type {@link ReqT} on subscription.
    * @param <ReqT> type of message sent one or more times to the server.
    * @param <RespT> type of message received one or more times from the server.
    */
   @CheckReturnValue
   public static <ReqT, RespT> Single<RespT> rxClientStreamingCall(
-      Single<ClientCall<ReqT, RespT>> clientCallSingle, Observable<ReqT> requestObservable) {
+      Single<ClientCall<ReqT, RespT>> clientCallSingle, Flowable<ReqT> requestFlowable) {
     return clientCallSingle
-        .flatMap(clientCall -> rxClientStreamingCall(clientCall, requestObservable));
+        .flatMap(clientCall -> rxClientStreamingCall(clientCall, requestFlowable));
   }
 
   private static <ReqT, RespT> Single<RespT> rxClientStreamingCall(
-      ClientCall<ReqT, RespT> clientCall, Observable<ReqT> requestObservable) {
+      ClientCall<ReqT, RespT> clientCall, Flowable<ReqT> requestFlowable) {
     Observable<RespT> responseObservable = Observable.create(emitter -> {
-      final AtomicReference<RequestObserver<ReqT, RespT>> requestObserverRef =
+      final AtomicReference<RequestSubscriber<ReqT, RespT>> requestObserverRef =
           new AtomicReference<>(null);
 
       ResponseObservableEmitter<ReqT, RespT> responseObserver = new ResponseObservableEmitter<>(
           emitter,
           isUpstreamTerminated -> {
-            RequestObserver<ReqT, RespT> requestObserver = requestObserverRef.get();
-            checkState(requestObserver != null);
-            requestObserver.stopObserveUpstream();
+            RequestSubscriber<ReqT, RespT> requestSubscriber = requestObserverRef.get();
+            checkState(requestSubscriber != null);
+            requestSubscriber.stopObserveUpstream();
 
             if (!isUpstreamTerminated) {
               clientCall.cancel(/* message */"disposed", /* cause */ null);
             }
           });
 
-      RequestObserver<ReqT, RespT> requestObserver = new RequestObserver<>(responseObserver);
+      RequestSubscriber<ReqT, RespT> requestSubscriber = new RequestSubscriber<>(responseObserver);
 
       AtomicBoolean subscribed = new AtomicBoolean(false);
-      responseObserver.setBeforeStartHandler(requestStreamObserver -> {
-        requestStreamObserver.setOnReadyHandler(() -> {
-          if (!subscribed.getAndSet(true)) {
-            // Only subscribe request-upstream when the RPC stream is ready
-            requestObserver
-                .startObserverUpstreamAndDelegate(requestObservable, requestStreamObserver);
-          }
-        });
-      });
-      requestObserverRef.set(requestObserver);
+      responseObserver.setBeforeStartHandler(requestStreamObserver -> requestStreamObserver.setOnReadyHandler(() -> {
+        if (!subscribed.getAndSet(true)) {
+          // Only subscribe request-upstream when the RPC stream is ready
+          requestSubscriber
+              .subscribe(requestFlowable, requestStreamObserver);
+        }
+        requestSubscriber.onDownstreamReady();
+      }));
+      requestObserverRef.set(requestSubscriber);
 
       // Starting the call
       ClientCalls.asyncClientStreamingCall(clientCall, responseObserver);
@@ -128,65 +129,68 @@ public class RxClientCalls {
   }
 
   /**
-   * A {@link Observer} which delegates request messages from upstream to {@link StreamObserver}.
+   * A {@link Subscriber} which delegates request messages from upstream to {@link StreamObserver}.
    */
-  private static class RequestObserver<ReqT, RespT> implements Observer<ReqT> {
+  private static class RequestSubscriber<ReqT, RespT> extends DisposableSubscriber<ReqT> {
 
     @Nullable
-    private StreamObserver<ReqT> requestStreamObserver;
-    private final ResponseObservableEmitter<ReqT, RespT> responseObservableEmitter;
+    private StreamObserver<ReqT> downstream;
+    private final ResponseObservableEmitter<ReqT, RespT> emitter;
 
-    private Disposable upstreamDisposable;
     private boolean isUpstreamTerminated;
 
-    public RequestObserver(
-        ResponseObservableEmitter<ReqT, RespT> responseObservableEmitter) {
-      this.responseObservableEmitter = responseObservableEmitter;
+    public RequestSubscriber(
+        ResponseObservableEmitter<ReqT, RespT> emitter) {
+      this.emitter = emitter;
     }
 
-    public void startObserverUpstreamAndDelegate(Observable<ReqT> requestObservable,
-        StreamObserver<ReqT> requestStreamObserver) {
-      this.requestStreamObserver = requestStreamObserver;
-      requestObservable.subscribe(this);
+    public void subscribe(Flowable<ReqT> requestFlowable,
+                          StreamObserver<ReqT> requestStreamObserver) {
+      this.downstream = requestStreamObserver;
+      requestFlowable.subscribe(this);
     }
 
     public void stopObserveUpstream() {
-      if (!isUpstreamTerminated && upstreamDisposable != null && !upstreamDisposable.isDisposed()) {
-        upstreamDisposable.dispose();
+      if (!isUpstreamTerminated && !isDisposed()) {
+          dispose();
       }
     }
 
+    public void onDownstreamReady() {
+      request(1);
+    }
+
     @Override
-    public void onSubscribe(@NonNull Disposable d) {
-      this.upstreamDisposable = d;
+    protected void onStart() {
+      // no-op
     }
 
     @Override
     public void onNext(@NonNull ReqT t) {
-      checkState(requestStreamObserver != null);
-      requestStreamObserver.onNext(t);
+      checkState(downstream != null);
+      downstream.onNext(t);
     }
 
     @Override
     public void onError(@NonNull Throwable e) {
-      checkState(requestStreamObserver != null);
+      checkState(downstream != null);
 
       isUpstreamTerminated = true;
 
       // Early propagate the error to downstream observer
-      responseObservableEmitter.onError(e);
+      emitter.onError(e);
 
-      // Send error the server and cancel the call
-      requestStreamObserver.onError(e);
+      // Send error to the server and cancel the call
+      downstream.onError(e);
     }
 
     @Override
     public void onComplete() {
-      checkState(requestStreamObserver != null);
+      checkState(downstream != null);
 
       isUpstreamTerminated = true;
 
-      requestStreamObserver.onCompleted();
+      downstream.onCompleted();
     }
   }
 
@@ -197,7 +201,7 @@ public class RxClientCalls {
   private static class ResponseObservableEmitter<ReqT, RespT> implements
       ClientResponseObserver<ReqT, RespT> {
 
-    private final ObservableEmitter<RespT> emitter;
+    private final ObservableEmitter<RespT> downstream;
 
     private Consumer<ClientCallStreamObserver<ReqT>> beforeStartHandler;
     private boolean isUpstreamTerminated;
@@ -205,7 +209,7 @@ public class RxClientCalls {
 
     private ResponseObservableEmitter(ObservableEmitter<RespT> emitter,
         Consumer<Boolean> cancellable) {
-      this.emitter = emitter;
+      this.downstream = emitter;
 
       emitter.setCancellable(() -> {
         stopEmitToDownstream();
@@ -226,7 +230,7 @@ public class RxClientCalls {
     @Override
     public void onNext(RespT value) {
       if (shouldEmitToDownstream()) {
-        emitter.onNext(value);
+        downstream.onNext(value);
       }
     }
 
@@ -235,7 +239,7 @@ public class RxClientCalls {
       isUpstreamTerminated = true;
 
       if (shouldEmitToDownstream()) {
-        emitter.onError(t);
+        downstream.onError(t);
         stopEmitToDownstream();
       }
     }
@@ -245,7 +249,7 @@ public class RxClientCalls {
       isUpstreamTerminated = true;
 
       if (shouldEmitToDownstream()) {
-        emitter.onComplete();
+        downstream.onComplete();
         stopEmitToDownstream();
       }
     }
