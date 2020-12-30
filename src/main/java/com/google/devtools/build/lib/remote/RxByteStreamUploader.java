@@ -149,8 +149,8 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
 
         // Upload could complete before downstream subscribe the returned Completable. If it then
         // subscribe, the RefCount will be increased from 0 to 1 resulting in a resubscription to
-        // Completable returned by {@link #uploadBlob}. So we check the uploadedBlobs with a lock
-        // inside {@link #uploadBlob}.
+        // Completable returned by {@link #upload}. So we check the uploadedBlobs with a lock
+        // inside {@link #upload}
         return Completable.fromObservable(upload);
       }
     });

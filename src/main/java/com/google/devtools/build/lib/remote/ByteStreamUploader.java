@@ -349,7 +349,7 @@ class ByteStreamUploader extends AbstractReferenceCounted implements RxByteStrea
 
   @Override
   public Completable upload(Digest digest, Chunker chunker, boolean forceUpload) {
-    return RxFutures.fromListenableFuture(() -> uploadBlobAsync(digest, chunker, forceUpload),
+    return RxFutures.toCompletable(() -> uploadBlobAsync(digest, chunker, forceUpload),
         MoreExecutors.directExecutor());
   }
 
