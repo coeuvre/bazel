@@ -134,7 +134,7 @@ public class RxClientCalls {
   private static class RequestSubscriber<ReqT, RespT> extends DisposableSubscriber<ReqT> {
 
     @Nullable
-    private StreamObserver<ReqT> downstream;
+    private ClientCallStreamObserver<ReqT> downstream;
     private final ResponseObservableEmitter<ReqT, RespT> emitter;
 
     private boolean isUpstreamTerminated;
@@ -145,7 +145,7 @@ public class RxClientCalls {
     }
 
     public void subscribe(Flowable<ReqT> requestFlowable,
-                          StreamObserver<ReqT> requestStreamObserver) {
+                          ClientCallStreamObserver<ReqT> requestStreamObserver) {
       this.downstream = requestStreamObserver;
       requestFlowable.subscribe(this);
     }
@@ -157,7 +157,9 @@ public class RxClientCalls {
     }
 
     public void onDownstreamReady() {
-      request(1);
+      while (!isUpstreamTerminated && downstream != null && downstream.isReady()) {
+        request(1);
+      }
     }
 
     @Override
