@@ -3,6 +3,7 @@ package com.google.devtools.build.lib.remote;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -152,7 +153,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
       public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
@@ -202,7 +203,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -217,7 +218,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       final byte[] receivedData = new byte[blob.length];
       String receivedResourceName = null;
@@ -304,11 +305,11 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
-    verify(mockBackoff, never()).nextDelayMillis();
+    verify(mockBackoff, never()).nextDelayMillis(any());
     verify(mockBackoff, times(1)).getRetryAttempts();
   }
 
@@ -321,7 +322,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numWriteCalls = new AtomicInteger(0);
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
@@ -355,7 +356,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -370,7 +371,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       boolean expireCall = true;
       boolean sawReset = false;
@@ -415,12 +416,12 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should have triggered a single retry, because it made
     // no progress.
-    verify(mockBackoff, times(1)).nextDelayMillis();
+    verify(mockBackoff, times(1)).nextDelayMillis(any());
   }
 
   @Test
@@ -432,7 +433,7 @@ public class RxByteStreamUploaderTest {
     // provide only enough data to write a single chunk
     InputStream in = new ByteArrayInputStream(blob, 0, CHUNK_SIZE);
     Chunker chunker = Chunker.builder().setInput(blob.length, in).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
       public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
@@ -442,7 +443,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     // This test should not have triggered any retries.
@@ -456,7 +457,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
       public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> streamObserver) {
@@ -466,7 +467,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     // This test should not have triggered any retries.
@@ -478,7 +479,7 @@ public class RxByteStreamUploaderTest {
     RxRemoteRetrier retrier = newRetrier(() -> new FixedBackoff(1, 0), (e) -> true);
     RxByteStreamUploader uploader = newUploader(retrier);
     int numUploads = 10;
-    HashCode[] hashCodes = new HashCode[numUploads];
+    Digest[] digests = new Digest[numUploads];
     Chunker[] chunkers = new Chunker[numUploads];
     Map<HashCode, byte[]> blobsByHash = Maps.newHashMap();
     Random rand = new Random();
@@ -487,10 +488,10 @@ public class RxByteStreamUploaderTest {
       byte[] blob = new byte[blobSize];
       rand.nextBytes(blob);
       Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-      HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
-      hashCodes[i] = hash;
+      Digest digest = DIGEST_UTIL.compute(blob);
+      digests[i] = digest;
       chunkers[i] = chunker;
-      blobsByHash.put(hash, blob);
+      blobsByHash.put(HashCode.fromString(digest.getHash()), blob);
     }
     serviceRegistry.addService(new MaybeFailOnceUploadService(blobsByHash));
 
@@ -498,7 +499,7 @@ public class RxByteStreamUploaderTest {
     for (int i = 0; i < numUploads; i++) {
       final int index = i;
       uploads[i] = withEmptyMetadata
-          .call(() -> uploader.upload(hashCodes[index], chunkers[index], true));
+          .call(() -> uploader.upload(digests[index], chunkers[index], true));
     }
 
     TestObserver[] uploadTests = new TestObserver[numUploads];
@@ -591,7 +592,7 @@ public class RxByteStreamUploaderTest {
       Digest actionDigest = chunkerEntry.getKey();
       Context ctx = TracingMetadataUtils
           .contextWithMetadata("build-req-id", "command-id", DIGEST_UTIL.asActionKey(actionDigest));
-      uploads.add(ctx.call(() -> uploader.upload(HashCode.fromString(actionDigest.getHash()),
+      uploads.add(ctx.call(() -> uploader.upload(actionDigest,
           chunkerEntry.getValue(), /* forceUpload=*/ true)));
     }
 
@@ -621,7 +622,7 @@ public class RxByteStreamUploaderTest {
             retrier);
     byte[] blob = new byte[CHUNK_SIZE];
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(ServerInterceptors.intercept(
         new ByteStreamImplBase() {
           @Override
@@ -663,7 +664,7 @@ public class RxByteStreamUploaderTest {
           }
         }));
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
   }
@@ -675,7 +676,7 @@ public class RxByteStreamUploaderTest {
     RxByteStreamUploader uploader = newUploader(retrier);
     byte[] blob = new byte[CHUNK_SIZE * 10];
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numWriteCalls = new AtomicInteger();
     CountDownLatch blocker = new CountDownLatch(1);
     serviceRegistry.addService(new ByteStreamImplBase() {
@@ -712,8 +713,8 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload1 = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
-    Completable upload2 = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload1 = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
+    Completable upload2 = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     TestObserver<Void> uploadTest1 = upload1.test();
     TestObserver<Void> uploadTest1Dup = upload1.test();
@@ -734,7 +735,7 @@ public class RxByteStreamUploaderTest {
     RxByteStreamUploader uploader = newUploader(retrier);
     byte[] blob = new byte[CHUNK_SIZE];
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
       public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> response) {
@@ -743,7 +744,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertError(e -> {
       assertThat(RemoteRetrierUtils.causedByStatus(e, Code.INTERNAL)).isTrue();
@@ -775,14 +776,14 @@ public class RxByteStreamUploaderTest {
     serviceRegistry.addService(service);
     byte[] blob1 = new byte[CHUNK_SIZE];
     Chunker chunker1 = Chunker.builder().setInput(blob1).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash1 = HashCode.fromString(DIGEST_UTIL.compute(blob1).getHash());
+    Digest digest1 = DIGEST_UTIL.compute(blob1);
     byte[] blob2 = new byte[CHUNK_SIZE + 1];
     Chunker chunker2 = Chunker.builder().setInput(blob2).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash2 = HashCode.fromString(DIGEST_UTIL.compute(blob2).getHash());
+    Digest digest2 = DIGEST_UTIL.compute(blob2);
 
-    Completable upload1 = uploader.upload(hash1, chunker1, true);
-    Completable upload1Dup = uploader.upload(hash1, chunker1, true);
-    Completable upload2 = uploader.upload(hash2, chunker2, true);
+    Completable upload1 = uploader.upload(digest1, chunker1, true);
+    Completable upload1Dup = uploader.upload(digest1, chunker1, true);
+    Completable upload2 = uploader.upload(digest2, chunker2, true);
 
     TestObserver<Void> uploadTest1 = upload1.test();
     TestObserver<Void> uploadTest1Dup = upload1Dup.test();
@@ -791,13 +792,13 @@ public class RxByteStreamUploaderTest {
     assertThat(uploader.uploadsInProgress()).isTrue();
 
     uploadTest1.dispose();
-    assertThat(uploader.uploadsInProgress(hash1)).isTrue();
+    assertThat(uploader.uploadsInProgress(digest1)).isTrue();
 
     uploadTest2.dispose();
-    assertThat(uploader.uploadsInProgress(hash2)).isFalse();
+    assertThat(uploader.uploadsInProgress(digest2)).isFalse();
 
     uploadTest1Dup.dispose();
-    assertThat(uploader.uploadsInProgress(hash1)).isFalse();
+    assertThat(uploader.uploadsInProgress(digest1)).isFalse();
 
     assertThat(uploader.uploadsInProgress()).isFalse();
 
@@ -838,9 +839,9 @@ public class RxByteStreamUploaderTest {
 
     byte[] blob = new byte[1];
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
   }
@@ -861,9 +862,9 @@ public class RxByteStreamUploaderTest {
     });
     byte[] blob = new byte[1];
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     assertThat(numCalls.get()).isEqualTo(1);
@@ -876,7 +877,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numUploads = new AtomicInteger();
     serviceRegistry.addService(new ByteStreamImplBase() {
       boolean failRequest = true;
@@ -917,7 +918,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     // This should fail
     upload.test().await().assertError(e -> {
@@ -926,7 +927,7 @@ public class RxByteStreamUploaderTest {
       return true;
     });
 
-    upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, false));
+    upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, false));
 
     // This should trigger an upload.
     upload.test().await().assertComplete();
@@ -941,7 +942,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numUploads = new AtomicInteger();
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
@@ -976,10 +977,10 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
     upload.test().await().assertComplete();
 
-    upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, false));
+    upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, false));
     // This should not trigger an upload.
     upload.test().await().assertComplete();
 
@@ -1011,7 +1012,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numUploads = new AtomicInteger();
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
@@ -1023,7 +1024,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertError(IOException.class);
     assertThat(refreshTimes.get()).isEqualTo(1);
@@ -1054,7 +1055,7 @@ public class RxByteStreamUploaderTest {
     byte[] blob = new byte[CHUNK_SIZE * 2 + 1];
     new Random().nextBytes(blob);
     Chunker chunker = Chunker.builder().setInput(blob).setChunkSize(CHUNK_SIZE).build();
-    HashCode hash = HashCode.fromString(DIGEST_UTIL.compute(blob).getHash());
+    Digest digest = DIGEST_UTIL.compute(blob);
     AtomicInteger numUploads = new AtomicInteger();
     serviceRegistry.addService(new ByteStreamImplBase() {
       @Override
@@ -1094,7 +1095,7 @@ public class RxByteStreamUploaderTest {
       }
     });
 
-    Completable upload = withEmptyMetadata.call(() -> uploader.upload(hash, chunker, true));
+    Completable upload = withEmptyMetadata.call(() -> uploader.upload(digest, chunker, true));
 
     upload.test().await().assertComplete();
     assertThat(refreshTimes.get()).isEqualTo(1);

@@ -1,5 +1,6 @@
 package com.google.devtools.build.lib.remote;
 
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -10,8 +11,10 @@ import com.google.bytestream.ByteStreamProto.QueryWriteStatusResponse;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.hash.HashCode;
+import com.google.common.util.concurrent.Futures;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import io.grpc.Context;
@@ -106,9 +109,9 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
   }
 
   @VisibleForTesting
-  boolean uploadsInProgress(HashCode hash) {
+  boolean uploadsInProgress(Digest digest) {
     synchronized (lock) {
-      return uploadsInProgress.get(hash) != null;
+      return uploadsInProgress.get(HashCode.fromString(digest.getHash())) != null;
     }
   }
 
@@ -116,10 +119,13 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
   public Completable upload(Digest digest, Chunker chunker, boolean forceUpload) {
     Context ctx = Context.current();
     RxByteStreamStub stub = newByteStreamStub(ctx);
-    HashCode hash = HashCode.fromString(digest.getHash());
 
     return Completable.defer(() -> {
       synchronized (lock) {
+        checkState(chunker.getSize() == digest.getSizeBytes(), String.format(
+            "Expected chunker size of %d, got %d",
+            digest.getSizeBytes(), chunker.getSize()));
+        HashCode hash = HashCode.fromString(digest.getHash());
         Observable<Void> upload = uploadsInProgress.computeIfAbsent(hash, key -> {
           return upload(stub, key, chunker, forceUpload)
               .onErrorResumeNext(e -> {

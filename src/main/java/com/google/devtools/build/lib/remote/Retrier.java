@@ -46,11 +46,12 @@ public class Retrier {
     /**
      * Returns the next delay in milliseconds, or a value less than {@code 0} if we should stop
      * retrying.
+     * @param t
      */
-    long nextDelayMillis(Exception e);
+    long nextDelayMillis(Throwable t);
 
     /**
-     * Returns the number of calls to {@link #nextDelayMillis(Exception)} thus far, not counting any
+     * Returns the number of calls to {@link #nextDelayMillis(Throwable)} thus far, not counting any
      * calls that returned less than {@code 0}.
      */
     int getRetryAttempts();
@@ -140,7 +141,7 @@ public class Retrier {
   public static final Backoff RETRIES_DISABLED =
       new Backoff() {
         @Override
-        public long nextDelayMillis(Exception e) {
+        public long nextDelayMillis(Throwable t) {
           return -1;
         }
 
@@ -161,7 +162,7 @@ public class Retrier {
     }
 
     @Override
-    public long nextDelayMillis(Exception e) {
+    public long nextDelayMillis(Throwable t) {
       if (retries >= maxRetries) {
         return -1;
       }

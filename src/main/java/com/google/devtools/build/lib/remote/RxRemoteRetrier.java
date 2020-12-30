@@ -55,7 +55,7 @@ public class RxRemoteRetrier {
             });
           }
         } else if (isRetriable(error)) {
-          long waitMillis = backoff.nextDelayMillis();
+          long waitMillis = backoff.nextDelayMillis(error);
           if (waitMillis >= 0) {
             logger.atWarning().withCause(error).log("Received retriable error, retrying");
             return Flowable.timer(waitMillis, TimeUnit.MILLISECONDS,

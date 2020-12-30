@@ -1403,7 +1403,7 @@ public class ByteStreamUploaderTest {
     }
 
     @Override
-    public long nextDelayMillis(Exception e) {
+    public long nextDelayMillis(Throwable t) {
       if (retries < maxRetries) {
         retries++;
         return delayMillis;

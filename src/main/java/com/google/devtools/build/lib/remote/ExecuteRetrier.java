@@ -44,18 +44,18 @@ class ExecuteRetrier extends RemoteRetrier {
     }
 
     @Override
-    public long nextDelayMillis(Exception e) {
+    public long nextDelayMillis(Throwable t) {
       if (retries >= maxRetryAttempts) {
         return -1;
       }
-      RetryInfo retryInfo = getRetryInfo(e);
+      RetryInfo retryInfo = getRetryInfo(t);
       retries++;
       return Durations.toMillis(retryInfo.getRetryDelay());
     }
 
-    RetryInfo getRetryInfo(Exception e) {
+    RetryInfo getRetryInfo(Throwable t) {
       RetryInfo retryInfo = RetryInfo.getDefaultInstance();
-      Status status = StatusProto.fromThrowable(e);
+      Status status = StatusProto.fromThrowable(t);
       if (status != null) {
         for (Any detail : status.getDetailsList()) {
           if (detail.is(RetryInfo.class)) {
