@@ -50,14 +50,14 @@ class ByteStreamBuildEventArtifactUploader implements BuildEventArtifactUploader
 
   private final ListeningExecutorService uploadExecutor;
   private final Context ctx;
-  private final ByteStreamUploader uploader;
+  private final RxByteStreamClient uploader;
   private final String remoteServerInstanceName;
   private final MissingDigestsFinder missingDigestsFinder;
 
   private final AtomicBoolean shutdown = new AtomicBoolean();
 
   ByteStreamBuildEventArtifactUploader(
-      ByteStreamUploader uploader,
+      RxByteStreamClient uploader,
       MissingDigestsFinder missingDigestsFinder,
       String remoteServerName,
       Context ctx,
@@ -193,7 +193,10 @@ class ByteStreamBuildEventArtifactUploader implements BuildEventArtifactUploader
         final ListenableFuture<Void> upload;
         Context prevCtx = ctx.attach();
         try {
-          upload = uploader.uploadBlobAsync(path.getDigest(), chunker, /* forceUpload=*/ false);
+          upload =
+              RxFutures.toListenableFuture(
+                  uploader.upload(path.getDigest(), chunker, /* forceUpload=*/ false),
+                  uploadExecutor);
         } finally {
           ctx.detach(prevCtx);
         }

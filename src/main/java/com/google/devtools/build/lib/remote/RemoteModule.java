@@ -496,15 +496,7 @@ public final class RemoteModule extends BlazeModule {
       }
     }
 
-    ByteStreamUploader uploader =
-        new ByteStreamUploader(
-            remoteOptions.remoteInstanceName,
-            cacheChannel.retain(),
-            callCredentialsProvider,
-            remoteOptions.remoteTimeout.getSeconds(),
-            retrier);
-
-    RxByteStreamClient rxByteStreamClient = uploader;
+    RxByteStreamClient rxByteStreamClient;
 
     if (remoteOptions.remoteExecutionKeepalive) {
       RxRemoteRetrier rxRetrier = new RxRemoteRetrier(
@@ -515,6 +507,13 @@ public final class RemoteModule extends BlazeModule {
           callCredentialsProvider);
       rxByteStreamClient = new RxByteStreamUploader(remoteOptions.remoteInstanceName,
           cacheChannel.retain(), remoteOptions.remoteTimeout.getSeconds(), rxRetrier);
+    } else {
+      rxByteStreamClient = new ByteStreamUploader(
+              remoteOptions.remoteInstanceName,
+              cacheChannel.retain(),
+              callCredentialsProvider,
+              remoteOptions.remoteTimeout.getSeconds(),
+              retrier);
     }
 
     cacheChannel.release();
@@ -531,7 +530,7 @@ public final class RemoteModule extends BlazeModule {
         TracingMetadataUtils.contextWithMetadata(buildRequestId, invocationId, "bes-upload");
     buildEventArtifactUploaderFactoryDelegate.init(
         new ByteStreamBuildEventArtifactUploaderFactory(
-            uploader,
+            rxByteStreamClient,
             cacheClient,
             cacheChannel.authority(),
             requestContext,

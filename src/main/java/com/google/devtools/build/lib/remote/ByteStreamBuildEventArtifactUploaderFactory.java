@@ -27,14 +27,14 @@ import javax.annotation.Nullable;
 class ByteStreamBuildEventArtifactUploaderFactory implements
     BuildEventArtifactUploaderFactory {
 
-  private final ByteStreamUploader uploader;
+  private final RxByteStreamClient uploader;
   private final String remoteServerName;
   private final Context ctx;
   private final MissingDigestsFinder missingDigestsFinder;
   @Nullable private final String remoteInstanceName;
 
   ByteStreamBuildEventArtifactUploaderFactory(
-      ByteStreamUploader uploader,
+      RxByteStreamClient uploader,
       MissingDigestsFinder missingDigestsFinder,
       String remoteServerName,
       Context ctx,

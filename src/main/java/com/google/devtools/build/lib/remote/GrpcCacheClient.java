@@ -392,7 +392,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
             Chunker.builder().setInput(digest.getSizeBytes(), path).build(), /* forceUpload= */
             true)
         .onErrorResumeNext(error -> Completable
-            .error(new IOException(format("Error while uploading file: %s", path))));
+            .error(new IOException(format("Error while uploading file: %s", path), error)));
     return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
   }
 
@@ -403,7 +403,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
             Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true)
         .onErrorResumeNext(error -> Completable.error(new IOException(
             format("Error while uploading blob with digest '%s/%s'", digest.getHash(),
-                digest.getSizeBytes()))));
+                digest.getSizeBytes()), error)));
     return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
   }
 }
