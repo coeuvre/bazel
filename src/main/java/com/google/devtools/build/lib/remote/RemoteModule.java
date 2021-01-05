@@ -497,14 +497,14 @@ public final class RemoteModule extends BlazeModule {
     }
 
     RxByteStreamClient rxByteStreamClient;
+    RxRemoteRetrier rxRetrier = new RxRemoteRetrier(
+        remoteOptions.remoteMaxRetryAttempts > 0
+            ? () -> new ExponentialBackoff(remoteOptions)
+            : () -> RETRIES_DISABLED,
+        RemoteRetrier.RETRIABLE_GRPC_ERRORS,
+        callCredentialsProvider);
 
     if (remoteOptions.remoteExecutionKeepalive) {
-      RxRemoteRetrier rxRetrier = new RxRemoteRetrier(
-          remoteOptions.remoteMaxRetryAttempts > 0
-              ? () -> new ExponentialBackoff(remoteOptions)
-              : () -> RETRIES_DISABLED,
-          RemoteRetrier.RETRIABLE_GRPC_ERRORS,
-          callCredentialsProvider);
       rxByteStreamClient = new RxByteStreamUploader(remoteOptions.remoteInstanceName,
           cacheChannel.retain(), remoteOptions.remoteTimeout.getSeconds(), rxRetrier);
     } else {
@@ -517,14 +517,26 @@ public final class RemoteModule extends BlazeModule {
     }
 
     cacheChannel.release();
-    RemoteCacheClient cacheClient =
-        new GrpcCacheClient(
-            cacheChannel.retain(),
-            callCredentialsProvider,
-            remoteOptions,
-            retrier,
-            digestUtil,
-            rxByteStreamClient.retain());
+    RemoteCacheClient cacheClient;
+    if (remoteOptions.remoteExecutionKeepalive) {
+      cacheClient =
+          new RxGrpcCacheClient(
+              cacheChannel.retain(),
+              rxRetrier,
+              remoteOptions,
+              digestUtil,
+              rxByteStreamClient.retain());
+    } else {
+      cacheClient =
+          new GrpcCacheClient(
+              cacheChannel.retain(),
+              callCredentialsProvider,
+              remoteOptions,
+              retrier,
+              digestUtil,
+              rxByteStreamClient.retain());
+    }
+
     rxByteStreamClient.release();
     Context requestContext =
         TracingMetadataUtils.contextWithMetadata(buildRequestId, invocationId, "bes-upload");

@@ -6,10 +6,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import io.reactivex.rxjava3.annotations.NonNull;
-import io.reactivex.rxjava3.core.Completable;
-import io.reactivex.rxjava3.core.CompletableObserver;
-import io.reactivex.rxjava3.core.Single;
-import io.reactivex.rxjava3.core.SingleObserver;
+import io.reactivex.rxjava3.core.*;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
@@ -64,6 +61,33 @@ public class RxFutures {
                 future.setException(e);
               }
             });
+    return future;
+  }
+
+  public static <T> ListenableFuture<T> toListenableFuture(Maybe<T> maybe, Executor executor) {
+    SettableFuture<T> future = SettableFuture.create();
+    maybe
+        .subscribeOn(Schedulers.from(executor))
+        .subscribe(new MaybeObserver<T>() {
+          @Override
+          public void onSubscribe(@NonNull Disposable d) {
+          }
+
+          @Override
+          public void onSuccess(@NonNull T t) {
+            future.set(t);
+          }
+
+          @Override
+          public void onError(@NonNull Throwable e) {
+            future.setException(e);
+          }
+
+          @Override
+          public void onComplete() {
+            future.set(null);
+          }
+        });
     return future;
   }
 

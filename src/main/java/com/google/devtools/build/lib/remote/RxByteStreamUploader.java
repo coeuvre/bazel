@@ -6,17 +6,16 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import build.bazel.remote.execution.v2.Digest;
 import com.google.bytestream.ByteStreamGrpc;
-import com.google.bytestream.ByteStreamProto.QueryWriteStatusRequest;
-import com.google.bytestream.ByteStreamProto.QueryWriteStatusResponse;
-import com.google.bytestream.ByteStreamProto.WriteRequest;
-import com.google.bytestream.ByteStreamProto.WriteResponse;
+import com.google.bytestream.ByteStreamProto;
+import com.google.bytestream.ByteStreamProto.*;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.hash.HashCode;
-import com.google.common.util.concurrent.Futures;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
+import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
+import com.google.protobuf.ByteString;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.Status.Code;
@@ -31,6 +30,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -209,6 +209,58 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
 
       return Completable.fromSingle(writeResult);
     });
+  }
+
+  public static String buildDownloadResourceName(String instanceName, Digest digest) {
+    String resourceName = "";
+    if (!instanceName.isEmpty()) {
+      resourceName += instanceName + "/";
+    }
+    return resourceName + "blobs/" + DigestUtil.toString(digest);
+  }
+
+  @Override
+  public Single<byte[]> download(Digest digest) {
+    if (digest.getSizeBytes() == 0) {
+      return Single.just(new byte[0]);
+    }
+
+    Context ctx = Context.current();
+    RxByteStreamStub stub = newByteStreamStub(ctx);
+    String resourceName = buildDownloadResourceName(instanceName, digest);
+
+    AtomicInteger offset = new AtomicInteger(0);
+    ProgressiveBackoff backoff = new ProgressiveBackoff(retrier::newBackoff);
+    byte[] bytes = new byte[(int) digest.getSizeBytes()];
+
+    Flowable<ReadResponse> responses =
+        stub.read(
+            Single.fromCallable(
+                () ->
+                    ByteStreamProto.ReadRequest.newBuilder()
+                        .setResourceName(resourceName)
+                        .setReadOffset(offset.get())
+                        .build()))
+            .doOnNext(
+                readResponse -> {
+                  ByteString data = readResponse.getData();
+                  data.copyTo(bytes, offset.getAndAdd(data.size()));
+
+                  // reset the stall backoff because we've made progress or been kept alive
+                  backoff.reset();
+                })
+            .onErrorResumeNext(
+                error -> {
+                  Status status = Status.fromThrowable(error);
+                  if (status.getCode() == Code.NOT_FOUND) {
+                    return Flowable.error(new CacheNotFoundException(digest));
+                  }
+
+                  return Flowable.error(error);
+                })
+            .retryWhen(errors -> retrier.retryWhen(errors, backoff));
+
+    return Completable.fromPublisher(responses).toSingle(() -> bytes);
   }
 
   /**

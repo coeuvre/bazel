@@ -9,10 +9,7 @@ import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import io.reactivex.rxjava3.annotations.CheckReturnValue;
 import io.reactivex.rxjava3.annotations.NonNull;
-import io.reactivex.rxjava3.core.Flowable;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.core.ObservableEmitter;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.*;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.subscribers.DisposableSubscriber;
 import org.reactivestreams.Subscriber;
@@ -126,6 +123,29 @@ public class RxClientCalls {
     });
 
     return responseObservable.singleOrError();
+  }
+
+  public static <ReqT, RespT> Flowable<RespT> rxServerStreamingCall(
+      Single<ClientCall<ReqT, RespT>> clientCallSingle, Single<ReqT> requestSingle) {
+    return clientCallSingle.flatMapPublisher(
+        clientCall ->
+            requestSingle.flatMapPublisher(request -> rxServerStreamingCall(clientCall, request)));
+  }
+
+  private static <ReqT, RespT> Flowable<RespT> rxServerStreamingCall(
+      ClientCall<ReqT, RespT> clientCall, ReqT request) {
+    Observable<RespT> responseObservable = Observable.create(emitter -> {
+      ResponseObservableEmitter<ReqT, RespT> responseObserver = new ResponseObservableEmitter<>(
+          emitter,
+          isUpstreamTerminated -> {
+            if (!isUpstreamTerminated) {
+              clientCall.cancel(/* message */"disposed", /* cause */ null);
+            }
+          });
+      ClientCalls.asyncServerStreamingCall(clientCall, request, responseObserver);
+    });
+
+    return responseObservable.toFlowable(BackpressureStrategy.BUFFER);
   }
 
   /**

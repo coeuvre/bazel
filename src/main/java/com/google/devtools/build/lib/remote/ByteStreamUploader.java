@@ -49,6 +49,8 @@ import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Single;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -351,6 +353,11 @@ class ByteStreamUploader extends AbstractReferenceCounted implements RxByteStrea
   public Completable upload(Digest digest, Chunker chunker, boolean forceUpload) {
     return RxFutures.toCompletable(() -> uploadBlobAsync(digest, chunker, forceUpload),
         MoreExecutors.directExecutor());
+  }
+
+  @Override
+  public Single<byte[]> download(Digest digest) {
+    return Single.error(new UnsupportedOperationException());
   }
 
   private static class AsyncUpload {
