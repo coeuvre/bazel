@@ -22,12 +22,16 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree.PathOrBytes;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.protobuf.Message;
+import io.reactivex.rxjava3.core.Completable;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -58,17 +62,22 @@ public class RemoteExecutionCache extends RemoteCache {
     Iterable<Digest> allDigests =
         Iterables.concat(merkleTree.getAllDigests(), additionalInputs.keySet());
     ImmutableSet<Digest> missingDigests =
-        getFromFuture(cacheProtocol.findMissingDigests(allDigests));
+        getFromFuture(
+            RxFutures.toListenableFuture(
+                cacheProtocol.findMissingDigests(allDigests), MoreExecutors.directExecutor()));
 
     List<ListenableFuture<Void>> uploadFutures = new ArrayList<>();
     for (Digest missingDigest : missingDigests) {
-      uploadFutures.add(uploadBlob(missingDigest, merkleTree, additionalInputs));
+      uploadFutures.add(
+          RxFutures.toListenableFuture(
+              uploadBlob(missingDigest, merkleTree, additionalInputs),
+              MoreExecutors.directExecutor()));
     }
 
     waitForBulkTransfer(uploadFutures, /* cancelRemainingOnInterrupt=*/ false);
   }
 
-  private ListenableFuture<Void> uploadBlob(
+  private Completable uploadBlob(
       Digest digest, MerkleTree merkleTree, Map<Digest, Message> additionalInputs) {
     Directory node = merkleTree.getDirectoryByDigest(digest);
     if (node != null) {
@@ -88,7 +97,7 @@ public class RemoteExecutionCache extends RemoteCache {
       return cacheProtocol.uploadBlob(digest, message.toByteString());
     }
 
-    return Futures.immediateFailedFuture(
+    return Completable.error(
         new IOException(
             format(
                 "findMissingDigests returned a missing digest that has not been requested: %s",

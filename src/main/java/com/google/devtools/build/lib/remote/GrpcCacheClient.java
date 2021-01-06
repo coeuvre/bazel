@@ -50,10 +50,7 @@ import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.MissingDigestsFinder;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
-import com.google.devtools.build.lib.remote.util.DigestOutputStream;
-import com.google.devtools.build.lib.remote.util.DigestUtil;
-import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
-import com.google.devtools.build.lib.remote.util.Utils;
+import com.google.devtools.build.lib.remote.util.*;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
 import io.grpc.Context;
@@ -62,6 +59,10 @@ import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -170,8 +171,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
         || Ascii.toLowerCase(options.remoteCache).startsWith("https://"));
   }
 
-  @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+  public ListenableFuture<ImmutableSet<Digest>> findMissingDigestsFuture(Iterable<Digest> digests) {
     if (Iterables.isEmpty(digests)) {
       return Futures.immediateFuture(ImmutableSet.of());
     }
@@ -220,6 +220,11 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
         MoreExecutors.directExecutor());
   }
 
+  @Override
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+    return RxFutures.toSingle(() -> findMissingDigestsFuture(digests), MoreExecutors.directExecutor());
+  }
+
   private ListenableFuture<FindMissingBlobsResponse> getMissingDigests(
       FindMissingBlobsRequest request) {
     Context ctx = Context.current();
@@ -241,8 +246,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
+  public Maybe<ActionResult> downloadActionResult(ActionKey actionKey, boolean inlineOutErr) {
     GetActionResultRequest request =
         GetActionResultRequest.newBuilder()
             .setInstanceName(options.remoteInstanceName)
@@ -251,48 +255,62 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
             .setInlineStdout(inlineOutErr)
             .build();
     Context ctx = Context.current();
-    return Utils.refreshIfUnauthenticatedAsync(
+
+    return RxFutures.toMaybe(
         () ->
-            retrier.executeAsync(
-                () -> ctx.call(() -> handleStatus(acFutureStub().getActionResult(request)))),
-        callCredentialsProvider);
+            Utils.refreshIfUnauthenticatedAsync(
+                () ->
+                    retrier.executeAsync(
+                        () ->
+                            ctx.call(() -> handleStatus(acFutureStub().getActionResult(request)))),
+                callCredentialsProvider),
+        MoreExecutors.directExecutor());
   }
 
   @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
-      throws IOException, InterruptedException {
-    try {
-      Utils.refreshIfUnauthenticated(
-          () ->
-              retrier.execute(
-                  () ->
-                      acBlockingStub()
-                          .updateActionResult(
-                              UpdateActionResultRequest.newBuilder()
-                                  .setInstanceName(options.remoteInstanceName)
-                                  .setActionDigest(actionKey.getDigest())
-                                  .setActionResult(actionResult)
-                                  .build())),
-          callCredentialsProvider);
-    } catch (StatusRuntimeException e) {
-      throw new IOException(e);
-    }
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
+    return Completable.fromCallable(() -> {
+      try {
+        return Utils.refreshIfUnauthenticated(
+            () ->
+                retrier.execute(
+                    () ->
+                        acBlockingStub()
+                            .updateActionResult(
+                                UpdateActionResultRequest.newBuilder()
+                                    .setInstanceName(options.remoteInstanceName)
+                                    .setActionDigest(actionKey.getDigest())
+                                    .setActionResult(actionResult)
+                                    .build())),
+            callCredentialsProvider);
+      } catch (StatusRuntimeException e) {
+        throw new IOException(e);
+      }
+    });
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+  public Single<byte[]> downloadBlob(Digest digest) {
     if (digest.getSizeBytes() == 0) {
-      return Futures.immediateFuture(null);
+      return Single.just(new byte[0]);
     }
 
-    @Nullable Supplier<Digest> digestSupplier = null;
-    if (options.remoteVerifyDownloads) {
-      DigestOutputStream digestOut = digestUtil.newDigestOutputStream(out);
-      digestSupplier = digestOut::digest;
-      out = digestOut;
-    }
+    ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream((int) digest.getSizeBytes());
 
-    return downloadBlob(digest, out, digestSupplier);
+    return RxFutures.toCompletable(
+            () -> {
+              OutputStream out = byteArrayOutputStream;
+
+              @Nullable Supplier<Digest> digestSupplier = null;
+              if (options.remoteVerifyDownloads) {
+                DigestOutputStream digestOut = digestUtil.newDigestOutputStream(out);
+                digestSupplier = digestOut::digest;
+                out = digestOut;
+              }
+              return downloadBlob(digest, out, digestSupplier);
+            },
+            MoreExecutors.directExecutor())
+        .toSingle(byteArrayOutputStream::toByteArray);
   }
 
   private ListenableFuture<Void> downloadBlob(
@@ -386,24 +404,30 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   }
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path path) {
-    Completable upload = uploader
-        .upload(digest,
-            Chunker.builder().setInput(digest.getSizeBytes(), path).build(), /* forceUpload= */
-            true)
-        .onErrorResumeNext(error -> Completable
-            .error(new IOException(format("Error while uploading file: %s", path), error)));
-    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
+  public Completable uploadFile(Digest digest, Path path) {
+    return uploader
+        .upload(
+            digest,
+            Chunker.builder().setInput(digest.getSizeBytes(), path).build(),
+            /* forceUpload= */ true)
+        .onErrorResumeNext(
+            error ->
+                Completable.error(
+                    new IOException(format("Error while uploading file: %s", path), error)));
   }
 
   @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    Completable upload = uploader
-        .upload(digest,
-            Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true)
-        .onErrorResumeNext(error -> Completable.error(new IOException(
-            format("Error while uploading blob with digest '%s/%s'", digest.getHash(),
-                digest.getSizeBytes()), error)));
-    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    return uploader
+        .upload(
+            digest, Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true)
+        .onErrorResumeNext(
+            error ->
+                Completable.error(
+                    new IOException(
+                        format(
+                            "Error while uploading blob with digest '%s/%s'",
+                            digest.getHash(), digest.getSizeBytes()),
+                        error)));
   }
 }

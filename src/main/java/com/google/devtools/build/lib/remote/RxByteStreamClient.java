@@ -3,7 +3,7 @@ package com.google.devtools.build.lib.remote;
 import build.bazel.remote.execution.v2.Digest;
 import io.netty.util.ReferenceCounted;
 import io.reactivex.rxjava3.core.Completable;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.Maybe;
 
 /** An interface for the ByteStream API. */
 public interface RxByteStreamClient extends ReferenceCounted {
@@ -24,7 +24,7 @@ public interface RxByteStreamClient extends ReferenceCounted {
    */
   Completable upload(Digest digest, Chunker chunker, boolean forceUpload);
 
-  Single<byte[]> download(Digest digest);
+  Maybe<byte[]> download(Digest digest);
 
   @Override
   RxByteStreamClient retain();

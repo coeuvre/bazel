@@ -220,9 +220,9 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
   }
 
   @Override
-  public Single<byte[]> download(Digest digest) {
+  public Maybe<byte[]> download(Digest digest) {
     if (digest.getSizeBytes() == 0) {
-      return Single.just(new byte[0]);
+      return Maybe.just(new byte[0]);
     }
 
     Context ctx = Context.current();
@@ -235,12 +235,12 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
 
     Flowable<ReadResponse> responses =
         stub.read(
-            Single.fromCallable(
-                () ->
-                    ByteStreamProto.ReadRequest.newBuilder()
-                        .setResourceName(resourceName)
-                        .setReadOffset(offset.get())
-                        .build()))
+                Single.fromCallable(
+                    () ->
+                        ByteStreamProto.ReadRequest.newBuilder()
+                            .setResourceName(resourceName)
+                            .setReadOffset(offset.get())
+                            .build()))
             .doOnNext(
                 readResponse -> {
                   ByteString data = readResponse.getData();
@@ -248,19 +248,21 @@ public class RxByteStreamUploader extends AbstractReferenceCounted implements Rx
 
                   // reset the stall backoff because we've made progress or been kept alive
                   backoff.reset();
-                })
-            .onErrorResumeNext(
-                error -> {
-                  Status status = Status.fromThrowable(error);
-                  if (status.getCode() == Code.NOT_FOUND) {
-                    return Flowable.error(new CacheNotFoundException(digest));
-                  }
+                });
 
-                  return Flowable.error(error);
-                })
-            .retryWhen(errors -> retrier.retryWhen(errors, backoff));
+    return Completable.fromPublisher(responses)
+        .toSingle(() -> bytes)
+        .toMaybe()
+        .onErrorResumeNext(
+            error -> {
+              Status status = Status.fromThrowable(error);
+              if (status.getCode() == Code.NOT_FOUND) {
+                return Maybe.empty();
+              }
 
-    return Completable.fromPublisher(responses).toSingle(() -> bytes);
+              return Maybe.error(error);
+            })
+        .retryWhen(errors -> retrier.retryWhen(errors, backoff));
   }
 
   /**

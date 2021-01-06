@@ -1,4 +1,4 @@
-package com.google.devtools.build.lib.remote;
+package com.google.devtools.build.lib.remote.util;
 
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.FutureCallback;
@@ -68,26 +68,26 @@ public class RxFutures {
     SettableFuture<T> future = SettableFuture.create();
     maybe
         .subscribeOn(Schedulers.from(executor))
-        .subscribe(new MaybeObserver<T>() {
-          @Override
-          public void onSubscribe(@NonNull Disposable d) {
-          }
+        .subscribe(
+            new MaybeObserver<T>() {
+              @Override
+              public void onSubscribe(@NonNull Disposable d) {}
 
-          @Override
-          public void onSuccess(@NonNull T t) {
-            future.set(t);
-          }
+              @Override
+              public void onSuccess(@NonNull T t) {
+                future.set(t);
+              }
 
-          @Override
-          public void onError(@NonNull Throwable e) {
-            future.setException(e);
-          }
+              @Override
+              public void onError(@NonNull Throwable e) {
+                future.setException(e);
+              }
 
-          @Override
-          public void onComplete() {
-            future.set(null);
-          }
-        });
+              @Override
+              public void onComplete() {
+                future.set(null);
+              }
+            });
     return future;
   }
 
@@ -98,7 +98,7 @@ public class RxFutures {
         emitter -> {
           boolean wasSubscribed = subscribed.getAndSet(true);
           Preconditions.checkState(
-              !wasSubscribed, "This completable cannot be subscribed to twice");
+              !wasSubscribed, "This Completable cannot be subscribed to twice");
           ListenableFuture<Void> future = futureSupplier.call();
           Futures.addCallback(
               future,
@@ -106,6 +106,62 @@ public class RxFutures {
                 @Override
                 public void onSuccess(Void v) {
                   emitter.onComplete();
+                }
+
+                @Override
+                public void onFailure(Throwable t) {
+                  emitter.onError(t);
+                }
+              },
+              executor);
+          emitter.setCancellable(() -> future.cancel(false));
+        });
+  }
+
+  public static <T> Maybe<T> toMaybe(
+      Callable<ListenableFuture<T>> futureSupplier, Executor executor) {
+    AtomicBoolean subscribed = new AtomicBoolean(false);
+    return Maybe.create(
+        emitter -> {
+          boolean wasSubscribed = subscribed.getAndSet(true);
+          Preconditions.checkState(!wasSubscribed, "This Maybe cannot be subscribed to twice");
+          ListenableFuture<T> future = futureSupplier.call();
+          Futures.addCallback(
+              future,
+              new FutureCallback<T>() {
+                @Override
+                public void onSuccess(T v) {
+                  if (v != null) {
+                    emitter.onSuccess(v);
+                  } else {
+                    emitter.onComplete();
+                  }
+                }
+
+                @Override
+                public void onFailure(Throwable t) {
+                  emitter.onError(t);
+                }
+              },
+              executor);
+          emitter.setCancellable(() -> future.cancel(false));
+        });
+  }
+
+  public static <T> Single<T> toSingle(
+      Callable<ListenableFuture<T>> futureSupplier, Executor executor) {
+    AtomicBoolean subscribed = new AtomicBoolean(false);
+    return Single.create(
+        emitter -> {
+          boolean wasSubscribed = subscribed.getAndSet(true);
+          Preconditions.checkState(!wasSubscribed, "This Single cannot be subscribed to twice");
+          ListenableFuture<T> future = futureSupplier.call();
+          Futures.addCallback(
+              future,
+              new FutureCallback<T>() {
+                @Override
+                public void onSuccess(T v) {
+                  emitter.onSuccess(v);
                 }
 
                 @Override

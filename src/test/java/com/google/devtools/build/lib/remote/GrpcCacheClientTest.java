@@ -105,6 +105,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+
+import io.reactivex.rxjava3.core.Maybe;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -1052,8 +1054,9 @@ public class GrpcCacheClientTest {
                 (numErrors-- <= 0 ? Status.NOT_FOUND : Status.UNAVAILABLE).asRuntimeException());
           }
         });
-    assertThat(getFromFuture(client.downloadActionResult(actionKey, /* inlineOutErr= */ false)))
-        .isNull();
+    Maybe<ActionResult> result = client.downloadActionResult(actionKey, /* inlineOutErr= */ false);
+
+    result.test().assertEmpty();
   }
 
   @Test

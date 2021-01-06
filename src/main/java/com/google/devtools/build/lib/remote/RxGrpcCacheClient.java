@@ -6,9 +6,11 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -21,7 +23,6 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -100,7 +101,8 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
                                 options.remoteTimeout.getSeconds(), TimeUnit.SECONDS))));
   }
 
-  public Maybe<ActionResult> downloadActionResultRx(
+  @Override
+  public Maybe<ActionResult> downloadActionResult(
       RemoteCacheClient.ActionKey actionKey, boolean inlineOutErr) {
     Context ctx = Context.current();
     RxActionCacheStub stub = newActionCacheStub(ctx);
@@ -128,13 +130,7 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
-    return RxFutures.toListenableFuture(
-        downloadActionResultRx(actionKey, inlineOutErr), MoreExecutors.directExecutor());
-  }
-
-  public Completable uploadActionResultRx(ActionKey actionKey, ActionResult actionResult) {
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
     Context ctx = Context.current();
     RxActionCacheStub stub = newActionCacheStub(ctx);
     Single<UpdateActionResultRequest> requestSingle =
@@ -150,16 +146,10 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
-      throws IOException, InterruptedException {
-    Utils.getFromFuture(
-        RxFutures.toListenableFuture(
-            uploadActionResultRx(actionKey, actionResult), MoreExecutors.directExecutor()));
-  }
-
-  public Single<byte[]> downloadBlobRx(Digest digest) {
+  public Single<byte[]> downloadBlob(Digest digest) {
     return byteStreamClient
         .download(digest)
+        .switchIfEmpty(Single.error(new CacheNotFoundException(digest)))
         .doOnSuccess(
             blob -> {
               if (options.remoteVerifyDownloads) {
@@ -169,50 +159,31 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
-    return RxFutures.toListenableFuture(
-        Completable.fromSingle(
-            downloadBlobRx(digest)
-                .doOnSuccess(
-                    blob -> {
-                      out.write(blob);
-                      out.flush();
-                    })),
-        MoreExecutors.directExecutor());
+  public Completable uploadFile(Digest digest, Path path) {
+    return byteStreamClient
+        .upload(
+            digest,
+            Chunker.builder().setInput(digest.getSizeBytes(), path).build(),
+            /* forceUpload= */ true)
+        .onErrorResumeNext(
+            error ->
+                Completable.error(
+                    new IOException(format("Error while uploading file: %s", path), error)));
   }
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path path) {
-    Completable upload =
-        byteStreamClient
-            .upload(
-                digest,
-                Chunker.builder().setInput(digest.getSizeBytes(), path).build(),
-                /* forceUpload= */ true)
-            .onErrorResumeNext(
-                error ->
-                    Completable.error(
-                        new IOException(format("Error while uploading file: %s", path), error)));
-    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
-  }
-
-  @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    Completable upload =
-        byteStreamClient
-            .upload(
-                digest,
-                Chunker.builder().setInput(data.toByteArray()).build(),
-                /* forceUpload= */ true)
-            .onErrorResumeNext(
-                error ->
-                    Completable.error(
-                        new IOException(
-                            format(
-                                "Error while uploading blob with digest '%s/%s'",
-                                digest.getHash(), digest.getSizeBytes()),
-                            error)));
-    return RxFutures.toListenableFuture(upload, MoreExecutors.directExecutor());
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    return byteStreamClient
+        .upload(
+            digest, Chunker.builder().setInput(data.toByteArray()).build(), /* forceUpload= */ true)
+        .onErrorResumeNext(
+            error ->
+                Completable.error(
+                    new IOException(
+                        format(
+                            "Error while uploading blob with digest '%s/%s'",
+                            digest.getHash(), digest.getSizeBytes()),
+                        error)));
   }
 
   @Override
@@ -224,7 +195,8 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
     channel.release();
   }
 
-  public Single<ImmutableSet<Digest>> findMissingDigestsRx(Iterable<Digest> digests) {
+  @Override
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
     if (Iterables.isEmpty(digests)) {
       return Single.just(ImmutableSet.of());
     }
@@ -262,11 +234,5 @@ public class RxGrpcCacheClient implements RemoteCacheClient {
                           requestMetadata.getActionId(), error.getMessage()),
                       error));
             });
-  }
-
-  @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
-    return RxFutures.toListenableFuture(
-        findMissingDigestsRx(digests), MoreExecutors.directExecutor());
   }
 }

@@ -36,6 +36,7 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.authandtls.CallCredentialsProvider;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.remote.util.Utils;
 import io.grpc.CallOptions;
@@ -49,6 +50,7 @@ import io.grpc.StatusRuntimeException;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 
 import java.io.IOException;
@@ -356,8 +358,8 @@ class ByteStreamUploader extends AbstractReferenceCounted implements RxByteStrea
   }
 
   @Override
-  public Single<byte[]> download(Digest digest) {
-    return Single.error(new UnsupportedOperationException());
+  public Maybe<byte[]> download(Digest digest) {
+    return Maybe.error(new UnsupportedOperationException());
   }
 
   private static class AsyncUpload {

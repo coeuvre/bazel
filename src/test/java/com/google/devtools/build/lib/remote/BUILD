@@ -97,7 +97,7 @@ java_test(
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:netty",
-        "//third_party:rxjava",
+        "//third_party:rxjava3",
         "//third_party:truth",
         "//third_party/grpc:grpc-jar",
         "//third_party/protobuf:protobuf_java",

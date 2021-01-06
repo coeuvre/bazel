@@ -23,15 +23,18 @@ import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** A {@link RemoteCache} that stores its contents in memory. */
+/** A {@link RemoteCacheClient} that stores its contents in memory. */
 public class InMemoryCacheClient implements RemoteCacheClient {
 
   private final ConcurrentMap<Digest, Exception> downloadFailures = new ConcurrentHashMap<>();
@@ -65,73 +68,70 @@ public class InMemoryCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+  public Single<byte[]> downloadBlob(Digest digest) {
     Exception failure = downloadFailures.get(digest);
     if (failure != null) {
       numFailures.incrementAndGet();
-      return Futures.immediateFailedFuture(failure);
+      return Single.error(failure);
     }
 
     byte[] data = cas.get(digest);
     if (data == null) {
-      return Futures.immediateFailedFuture(new CacheNotFoundException(digest));
+      return Single.error(new CacheNotFoundException(digest));
     }
 
-    try {
-      out.write(data);
-      out.flush();
-    } catch (IOException e) {
-      numFailures.incrementAndGet();
-      return Futures.immediateFailedFuture(e);
-    }
     numSuccess.incrementAndGet();
-    return Futures.immediateFuture(null);
+    return Single.just(data);
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
-    ActionResult actionResult = ac.get(actionKey);
-    if (actionResult == null) {
-      return Futures.immediateFailedFuture(new CacheNotFoundException(actionKey.getDigest()));
-    }
-    return Futures.immediateFuture(actionResult);
+  public Maybe<ActionResult> downloadActionResult(ActionKey actionKey, boolean inlineOutErr) {
+    return Maybe.fromCallable(
+        () -> {
+          ActionResult actionResult = ac.get(actionKey);
+          if (actionResult == null) {
+            throw new CacheNotFoundException(actionKey.getDigest());
+          }
+
+          return actionResult;
+        });
   }
 
   @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
-    ac.put(actionKey, actionResult);
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
+    return Completable.fromCallable(() -> {
+      ac.put(actionKey, actionResult);
+      return null;
+    });
   }
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path file) {
-    try (InputStream in = file.getInputStream()) {
-      cas.put(digest, ByteStreams.toByteArray(in));
-    } catch (IOException e) {
-      return Futures.immediateFailedFuture(e);
-    }
-    return Futures.immediateFuture(null);
+  public Completable uploadFile(Digest digest, Path file) {
+    return Completable.fromCallable(() -> {
+      try (InputStream in = file.getInputStream()) {
+        cas.put(digest, ByteStreams.toByteArray(in));
+      }
+      return null;
+    });
   }
 
   @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    try (InputStream in = data.newInput()) {
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    return Completable.fromCallable(() -> {
       cas.put(digest, data.toByteArray());
-    } catch (IOException e) {
-      return Futures.immediateFailedFuture(e);
-    }
-    return Futures.immediateFuture(null);
+      return null;
+    });
   }
 
   @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
     ImmutableSet.Builder<Digest> missingBuilder = ImmutableSet.builder();
     for (Digest digest : digests) {
       if (!cas.containsKey(digest)) {
         missingBuilder.add(digest);
       }
     }
-    return Futures.immediateFuture(missingBuilder.build());
+    return Single.just(missingBuilder.build());
   }
 
   @Override

@@ -25,6 +25,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.util.DigestOutputStream;
@@ -68,11 +69,11 @@ import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.handler.timeout.WriteTimeoutException;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
-import java.io.FileInputStream;
-import java.io.FilterInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
+import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
@@ -437,23 +438,21 @@ public final class HttpCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+  public Single<byte[]> downloadBlob(Digest digest) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
     final DigestOutputStream digestOut =
         verifyDownloads ? digestUtil.newDigestOutputStream(out) : null;
-    return Futures.transformAsync(
-        get(digest, digestOut != null ? digestOut : out, /* casDownload= */ true),
-        (v) -> {
-          try {
-            if (digestOut != null) {
-              Utils.verifyBlobContents(digest, digestOut.digest());
-            }
-            out.flush();
-            return Futures.immediateFuture(null);
-          } catch (IOException e) {
-            return Futures.immediateFailedFuture(e);
-          }
-        },
-        MoreExecutors.directExecutor());
+    return RxFutures.toCompletable(
+            () -> get(digest, digestOut != null ? digestOut : out, /* casDownload= */ true),
+            MoreExecutors.directExecutor())
+        .doOnComplete(
+            () -> {
+              if (digestOut != null) {
+                Utils.verifyBlobContents(digest, digestOut.digest());
+              }
+              out.flush();
+            })
+        .toSingle(out::toByteArray);
   }
 
   @SuppressWarnings("FutureReturnValueIgnored")
@@ -571,10 +570,12 @@ public final class HttpCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
-    return Utils.downloadAsActionResult(
-        actionKey, (digest, out) -> get(digest, out, /* casDownload= */ false));
+  public Maybe<ActionResult> downloadActionResult(ActionKey actionKey, boolean inlineOutErr) {
+    return RxFutures.toMaybe(
+        () ->
+            Utils.downloadAsActionResult(
+                actionKey, (digest, out) -> get(digest, out, /* casDownload= */ false)),
+        MoreExecutors.directExecutor());
   }
 
   @SuppressWarnings("FutureReturnValueIgnored")
@@ -669,25 +670,29 @@ public final class HttpCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path file) {
-    try {
-      return uploadAsync(
-          digest.getHash(), digest.getSizeBytes(), file.getInputStream(), /* casUpload= */ true);
-    } catch (IOException e) {
-      // Can be thrown from file.getInputStream.
-      return Futures.immediateFailedFuture(e);
-    }
+  public Completable uploadFile(Digest digest, Path file) {
+    return RxFutures.toCompletable(
+        () ->
+            uploadAsync(
+                digest.getHash(),
+                digest.getSizeBytes(),
+                file.getInputStream(),
+                /* casUpload= */ true),
+        MoreExecutors.directExecutor());
   }
 
   @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    return uploadAsync(
-        digest.getHash(), digest.getSizeBytes(), data.newInput(), /* casUpload= */ true);
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    return RxFutures.toCompletable(
+        () ->
+            uploadAsync(
+                digest.getHash(), digest.getSizeBytes(), data.newInput(), /* casUpload= */ true),
+        MoreExecutors.directExecutor());
   }
 
   @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
-    return Futures.immediateFuture(ImmutableSet.copyOf(digests));
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+    return Single.just(ImmutableSet.copyOf(digests));
   }
 
   private boolean reset(InputStream in) throws IOException {
@@ -704,23 +709,24 @@ public final class HttpCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
-      throws IOException, InterruptedException {
-    ByteString serialized = actionResult.toByteString();
-    ListenableFuture<Void> uploadFuture =
-        uploadAsync(
-            actionKey.getDigest().getHash(),
-            serialized.size(),
-            serialized.newInput(),
-            /* casUpload= */ false);
-    try {
-      uploadFuture.get();
-    } catch (ExecutionException e) {
-      Throwables.throwIfUnchecked(e.getCause());
-      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
-      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
-      throw new IOException(e.getCause());
-    }
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
+    return Completable.fromCallable(() -> {
+      ByteString serialized = actionResult.toByteString();
+      ListenableFuture<Void> uploadFuture =
+          uploadAsync(
+              actionKey.getDigest().getHash(),
+              serialized.size(),
+              serialized.newInput(),
+              /* casUpload= */ false);
+      try {
+        return uploadFuture.get();
+      } catch (ExecutionException e) {
+        Throwables.throwIfUnchecked(e.getCause());
+        Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+        Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+        throw new IOException(e.getCause());
+      }
+    });
   }
 
   /**

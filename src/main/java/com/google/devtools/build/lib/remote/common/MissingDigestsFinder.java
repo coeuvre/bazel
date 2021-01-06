@@ -15,7 +15,7 @@ package com.google.devtools.build.lib.remote.common;
 
 import build.bazel.remote.execution.v2.Digest;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.util.concurrent.ListenableFuture;
+import io.reactivex.rxjava3.core.Single;
 
 /** Supports querying a remote cache whether it contains a list of blobs. */
 public interface MissingDigestsFinder {
@@ -26,5 +26,5 @@ public interface MissingDigestsFinder {
    *
    * @param digests The list of digests to look for.
    */
-  ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests);
+  Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests);
 }

@@ -532,10 +532,10 @@ java_import(
 )
 
 java_import(
-    name = "rxjava",
-    jars = ["rxjava/rxjava-3.0.7.jar"],
+    name = "rxjava3",
+    jars = ["rxjava3/rxjava-3.0.7.jar"],
+    exports = [":reactive_streams"],
     deps = [":reactive_streams"],
-    exports = [":reactive_streams"]
 )
 
 java_import(

@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.buildeventstream.PathConverter;
 import com.google.devtools.build.lib.collect.ImmutableIterable;
 import com.google.devtools.build.lib.remote.common.MissingDigestsFinder;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.vfs.Path;
 import io.grpc.Context;
 import java.io.IOException;
@@ -170,7 +171,11 @@ class ByteStreamBuildEventArtifactUploader implements BuildEventArtifactUploader
       return Futures.immediateFuture(ImmutableIterable.from(knownRemotePaths));
     }
     return Futures.transform(
-        ctx.call(() -> missingDigestsFinder.findMissingDigests(digestsToQuery)),
+        ctx.call(
+            () ->
+                RxFutures.toListenableFuture(
+                    missingDigestsFinder.findMissingDigests(digestsToQuery),
+                    MoreExecutors.directExecutor())),
         (missingDigests) -> {
           List<PathMetadata> filesToQueryUpdated = processQueryResult(missingDigests, filesToQuery);
           return ImmutableIterable.from(Iterables.concat(knownRemotePaths, filesToQueryUpdated));

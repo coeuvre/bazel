@@ -20,10 +20,15 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.UUID;
@@ -48,12 +53,14 @@ public final class DiskAndRemoteCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
-      throws IOException, InterruptedException {
-    diskCache.uploadActionResult(actionKey, actionResult);
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
+    Completable diskUpload = diskCache.uploadActionResult(actionKey, actionResult);
+    Completable remoteUpload = Completable.complete();
     if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteUploadLocalResults) {
-      remoteCache.uploadActionResult(actionKey, actionResult);
+      remoteUpload = remoteCache.uploadActionResult(actionKey, actionResult);
     }
+
+    return Completable.mergeArray(diskUpload, remoteUpload);
   }
 
   @Override
@@ -63,47 +70,32 @@ public final class DiskAndRemoteCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path file) {
-    try {
-      diskCache.uploadFile(digest, file).get();
-      if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteUploadLocalResults) {
-        remoteCache.uploadFile(digest, file).get();
-      }
-    } catch (ExecutionException e) {
-      return Futures.immediateFailedFuture(e.getCause());
-    } catch (InterruptedException e) {
-      return Futures.immediateFailedFuture(e);
+  public Completable uploadFile(Digest digest, Path file) {
+    Completable diskUpload = diskCache.uploadFile(digest, file);
+    Completable remoteUpload = Completable.complete();
+    if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteUploadLocalResults) {
+      remoteUpload = remoteCache.uploadFile(digest, file);
     }
-    return Futures.immediateFuture(null);
+    return Completable.mergeArray(diskUpload, remoteUpload);
   }
 
   @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    try {
-      diskCache.uploadBlob(digest, data).get();
-      if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteUploadLocalResults) {
-        remoteCache.uploadBlob(digest, data).get();
-      }
-    } catch (ExecutionException e) {
-      return Futures.immediateFailedFuture(e.getCause());
-    } catch (InterruptedException e) {
-      return Futures.immediateFailedFuture(e);
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    Completable diskUpload = diskCache.uploadBlob(digest, data);
+    Completable remoteUpload = Completable.complete();
+    if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteUploadLocalResults) {
+      remoteUpload = remoteCache.uploadBlob(digest, data);
     }
-    return Futures.immediateFuture(null);
+    return Completable.mergeArray(diskUpload, remoteUpload);
   }
 
   @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
-    ListenableFuture<ImmutableSet<Digest>> remoteQuery = remoteCache.findMissingDigests(digests);
-    ListenableFuture<ImmutableSet<Digest>> diskQuery = diskCache.findMissingDigests(digests);
-    return Futures.whenAllSucceed(remoteQuery, diskQuery)
-        .call(
-            () ->
-                ImmutableSet.<Digest>builder()
-                    .addAll(remoteQuery.get())
-                    .addAll(diskQuery.get())
-                    .build(),
-            MoreExecutors.directExecutor());
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+    Single<ImmutableSet<Digest>> remoteQuery = remoteCache.findMissingDigests(digests);
+    Single<ImmutableSet<Digest>> diskQuery = diskCache.findMissingDigests(digests);
+    return Single.mergeArray(remoteQuery, diskQuery)
+        .<ImmutableSet.Builder<Digest>>collect(ImmutableSet::builder, ImmutableSet.Builder::addAll)
+        .map(ImmutableSet.Builder::build);
   }
 
   private Path newTempPath() {
@@ -127,62 +119,44 @@ public final class DiskAndRemoteCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+  public Single<byte[]> downloadBlob(Digest digest) {
     if (diskCache.contains(digest)) {
-      return diskCache.downloadBlob(digest, out);
-    }
-
-    Path tempPath = newTempPath();
-    final OutputStream tempOut;
-    try {
-      tempOut = tempPath.getOutputStream();
-    } catch (IOException e) {
-      return Futures.immediateFailedFuture(e);
+      return diskCache.downloadBlob(digest);
     }
 
     if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteAcceptCached) {
-      ListenableFuture<Void> download =
-          closeStreamOnError(remoteCache.downloadBlob(digest, tempOut), tempOut);
-      ListenableFuture<Void> saveToDiskAndTarget =
-          Futures.transformAsync(
-              download,
-              (unused) -> {
-                try {
-                  tempOut.close();
-                  diskCache.captureFile(tempPath, digest, /* isActionCache= */ false);
-                } catch (IOException e) {
-                  return Futures.immediateFailedFuture(e);
+      return remoteCache
+          .downloadBlob(digest)
+          .doOnSuccess(
+              bytes -> {
+                Path tempPath = newTempPath();
+                try (OutputStream out = tempPath.getOutputStream()) {
+                  out.write(bytes);
                 }
-                return diskCache.downloadBlob(digest, out);
-              },
-              MoreExecutors.directExecutor());
-      return saveToDiskAndTarget;
+                diskCache.captureFile(tempPath, digest, /* isActionCache= */ false);
+              })
+          .flatMap((unused) -> diskCache.downloadBlob(digest));
     } else {
-      return Futures.immediateFuture(null);
+      return Single.error(new CacheNotFoundException(digest));
     }
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
+  public Maybe<ActionResult> downloadActionResult(ActionKey actionKey, boolean inlineOutErr) {
     if (diskCache.containsActionResult(actionKey)) {
       return diskCache.downloadActionResult(actionKey, inlineOutErr);
     }
 
     if (!options.incompatibleRemoteResultsIgnoreDisk || options.remoteAcceptCached) {
-      return Futures.transformAsync(
-          remoteCache.downloadActionResult(actionKey, inlineOutErr),
-          (actionResult) -> {
-            if (actionResult == null) {
-              return Futures.immediateFuture(null);
-            } else {
-              diskCache.uploadActionResult(actionKey, actionResult);
-              return Futures.immediateFuture(actionResult);
-            }
-          },
-          MoreExecutors.directExecutor());
+      return remoteCache
+          .downloadActionResult(actionKey, inlineOutErr)
+          .flatMapSingle(
+              actionResult ->
+                  diskCache
+                      .uploadActionResult(actionKey, actionResult)
+                      .toSingle(() -> actionResult));
     } else {
-      return Futures.immediateFuture(null);
+      return Maybe.empty();
     }
   }
 }

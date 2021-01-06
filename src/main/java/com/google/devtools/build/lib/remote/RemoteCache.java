@@ -30,16 +30,14 @@ import build.bazel.remote.execution.v2.OutputSymlink;
 import build.bazel.remote.execution.v2.SymlinkNode;
 import build.bazel.remote.execution.v2.Tree;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.flogger.GoogleLogger;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
+import com.google.common.util.concurrent.*;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
@@ -60,6 +58,7 @@ import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.util.Utils.InMemoryOutput;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.RemoteExecution;
@@ -75,6 +74,9 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -117,7 +119,13 @@ public class RemoteCache implements AutoCloseable {
 
   public ActionResult downloadActionResult(ActionKey actionKey, boolean inlineOutErr)
       throws IOException, InterruptedException {
-    return getFromFuture(cacheProtocol.downloadActionResult(actionKey, inlineOutErr));
+    try {
+      return cacheProtocol.downloadActionResult(actionKey, inlineOutErr).blockingGet();
+    } catch (RuntimeException e) {
+      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+      throw e;
+    }
   }
 
   /**
@@ -140,7 +148,13 @@ public class RemoteCache implements AutoCloseable {
     resultBuilder.setExitCode(exitCode);
     ActionResult result = resultBuilder.build();
     if (exitCode == 0 && !action.getDoNotCache()) {
-      cacheProtocol.uploadActionResult(actionKey, result);
+      try {
+        cacheProtocol.uploadActionResult(actionKey, result).blockingAwait();
+      } catch (RuntimeException e) {
+        Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+        Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+        throw e;
+      }
     }
     return result;
   }
@@ -182,19 +196,22 @@ public class RemoteCache implements AutoCloseable {
     digests.addAll(digestToFile.keySet());
     digests.addAll(digestToBlobs.keySet());
 
-    ImmutableSet<Digest> digestsToUpload = getFromFuture(cacheProtocol.findMissingDigests(digests));
+    ImmutableSet<Digest> digestsToUpload =
+        getFromFuture(
+            RxFutures.toListenableFuture(
+                cacheProtocol.findMissingDigests(digests), MoreExecutors.directExecutor()));
     ImmutableList.Builder<ListenableFuture<Void>> uploads = ImmutableList.builder();
     for (Digest digest : digestsToUpload) {
       Path file = digestToFile.get(digest);
       if (file != null) {
-        uploads.add(cacheProtocol.uploadFile(digest, file));
+        uploads.add(RxFutures.toListenableFuture(cacheProtocol.uploadFile(digest, file), MoreExecutors.directExecutor()));
       } else {
         ByteString blob = digestToBlobs.get(digest);
         if (blob == null) {
           String message = "FindMissingBlobs call returned an unknown digest: " + digest;
           throw new IOException(message);
         }
-        uploads.add(cacheProtocol.uploadBlob(digest, blob));
+        uploads.add(RxFutures.toListenableFuture(cacheProtocol.uploadBlob(digest, blob), MoreExecutors.directExecutor()));
       }
     }
 
@@ -260,28 +277,7 @@ public class RemoteCache implements AutoCloseable {
     if (digest.getSizeBytes() == 0) {
       return EMPTY_BYTES;
     }
-    ByteArrayOutputStream bOut = new ByteArrayOutputStream((int) digest.getSizeBytes());
-    SettableFuture<byte[]> outerF = SettableFuture.create();
-    Futures.addCallback(
-        cacheProtocol.downloadBlob(digest, bOut),
-        new FutureCallback<Void>() {
-          @Override
-          public void onSuccess(Void aVoid) {
-            try {
-              outerF.set(bOut.toByteArray());
-            } catch (RuntimeException e) {
-              logger.atWarning().withCause(e).log("Unexpected exception");
-              outerF.setException(e);
-            }
-          }
-
-          @Override
-          public void onFailure(Throwable t) {
-            outerF.setException(t);
-          }
-        },
-        directExecutor());
-    return outerF;
+    return RxFutures.toListenableFuture(cacheProtocol.downloadBlob(digest), directExecutor());
   }
 
   private static Path toTmpDownloadPath(Path actualPath) {
@@ -465,43 +461,17 @@ public class RemoteCache implements AutoCloseable {
       return COMPLETED_SUCCESS;
     }
 
-    OutputStream out = new LazyFileOutputStream(path);
-    SettableFuture<Void> outerF = SettableFuture.create();
-    ListenableFuture<Void> f = cacheProtocol.downloadBlob(digest, out);
-    Futures.addCallback(
-        f,
-        new FutureCallback<Void>() {
-          @Override
-          public void onSuccess(Void result) {
-            try {
-              out.close();
-              outerF.set(null);
-            } catch (IOException e) {
-              outerF.setException(e);
-            } catch (RuntimeException e) {
-              logger.atWarning().withCause(e).log("Unexpected exception");
-              outerF.setException(e);
-            }
-          }
-
-          @Override
-          public void onFailure(Throwable t) {
-            try {
-              out.close();
-            } catch (IOException e) {
-              if (t != e) {
-                t.addSuppressed(e);
-              }
-            } catch (RuntimeException e) {
-              logger.atWarning().withCause(e).log("Unexpected exception");
-              t.addSuppressed(e);
-            } finally {
-              outerF.setException(t);
-            }
-          }
-        },
+    return RxFutures.toListenableFuture(
+        Completable.fromSingle(
+            cacheProtocol
+                .downloadBlob(digest)
+                .doOnSuccess(
+                    data -> {
+                      try (OutputStream out = path.getOutputStream()) {
+                        out.write(data);
+                      }
+                    })),
         directExecutor());
-    return outerF;
   }
 
   private List<ListenableFuture<FileMetadata>> downloadOutErr(ActionResult result, OutErr outErr) {
@@ -514,11 +484,18 @@ public class RemoteCache implements AutoCloseable {
         downloads.add(Futures.immediateFailedFuture(e));
       }
     } else if (result.hasStdoutDigest()) {
-      downloads.add(
-          Futures.transform(
-              cacheProtocol.downloadBlob(result.getStdoutDigest(), outErr.getOutputStream()),
-              (d) -> null,
-              directExecutor()));
+      Maybe<FileMetadata> maybe =
+          cacheProtocol
+              .downloadBlob(result.getStdoutDigest())
+              .doOnSuccess(
+                  data -> {
+                    try (OutputStream out = outErr.getOutputStream()) {
+                      out.write(data);
+                    }
+                  })
+              .toMaybe()
+              .flatMap(d -> Maybe.empty());
+      downloads.add(RxFutures.toListenableFuture(maybe, directExecutor()));
     }
     if (!result.getStderrRaw().isEmpty()) {
       try {
@@ -528,11 +505,18 @@ public class RemoteCache implements AutoCloseable {
         downloads.add(Futures.immediateFailedFuture(e));
       }
     } else if (result.hasStderrDigest()) {
-      downloads.add(
-          Futures.transform(
-              cacheProtocol.downloadBlob(result.getStderrDigest(), outErr.getErrorStream()),
-              (d) -> null,
-              directExecutor()));
+      Maybe<FileMetadata> maybe =
+          cacheProtocol
+              .downloadBlob(result.getStderrDigest())
+              .doOnSuccess(
+                  data -> {
+                    try (OutputStream out = outErr.getOutputStream()) {
+                      out.write(data);
+                    }
+                  })
+              .toMaybe()
+              .flatMap(d -> Maybe.empty());
+      downloads.add(RxFutures.toListenableFuture(maybe, directExecutor()));
     }
     return downloads;
   }

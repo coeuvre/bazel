@@ -22,6 +22,7 @@ import build.bazel.remote.asset.v1.Qualifier;
 import build.bazel.remote.execution.v2.Digest;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
+import com.google.common.base.Throwables;
 import com.google.devtools.build.lib.bazel.repository.downloader.Checksum;
 import com.google.devtools.build.lib.bazel.repository.downloader.Downloader;
 import com.google.devtools.build.lib.bazel.repository.downloader.HashOutputStream;
@@ -120,8 +121,15 @@ public class GrpcRemoteDownloader implements AutoCloseable, Downloader {
           () ->
               requestCtx.call(
                   () -> {
-                    try (OutputStream out = newOutputStream(destination, checksum)) {
-                      Utils.getFromFuture(cacheClient.downloadBlob(blobDigest, out));
+                    try {
+                      byte[] data = cacheClient.downloadBlob(blobDigest).blockingGet();
+                      try (OutputStream out = newOutputStream(destination, checksum)) {
+                        out.write(data);
+                      }
+                    } catch (RuntimeException e) {
+                      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+                      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+                      throw e;
                     }
                     return null;
                   }));

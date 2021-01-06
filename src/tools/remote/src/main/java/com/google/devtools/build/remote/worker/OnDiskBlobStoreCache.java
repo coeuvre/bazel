@@ -18,12 +18,15 @@ import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.Directory;
 import build.bazel.remote.execution.v2.DirectoryNode;
 import build.bazel.remote.execution.v2.FileNode;
+import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.remote.RemoteCache;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
 import com.google.devtools.build.lib.remote.disk.DiskCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
@@ -59,16 +62,22 @@ class OnDiskBlobStoreCache extends RemoteCache {
   }
 
   public ListenableFuture<Void> uploadFile(Digest digest, Path file) {
-    return cacheProtocol.uploadFile(digest, file);
+    return RxFutures.toListenableFuture(cacheProtocol.uploadFile(digest, file), MoreExecutors.directExecutor());
   }
 
   public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    return cacheProtocol.uploadBlob(digest, data);
+    return RxFutures.toListenableFuture(cacheProtocol.uploadBlob(digest, data), MoreExecutors.directExecutor());
   }
 
   public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
       throws IOException, InterruptedException {
-    cacheProtocol.uploadActionResult(actionKey, actionResult);
+    try {
+      cacheProtocol.uploadActionResult(actionKey, actionResult).blockingAwait();
+    } catch (RuntimeException e) {
+      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+      throw e;
+    }
   }
 
   public DigestUtil getDigestUtil() {

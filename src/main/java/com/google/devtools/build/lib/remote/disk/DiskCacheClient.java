@@ -20,6 +20,7 @@ import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.util.DigestOutputStream;
@@ -27,6 +28,11 @@ import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -80,68 +86,72 @@ public class DiskCacheClient implements RemoteCacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+  public Single<byte[]> downloadBlob(Digest digest) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
     @Nullable
     DigestOutputStream digestOut = verifyDownloads ? digestUtil.newDigestOutputStream(out) : null;
-    return Futures.transformAsync(
-        download(digest, digestOut != null ? digestOut : out, /* isActionCache= */ false),
-        (v) -> {
-          try {
-            if (digestOut != null) {
-              Utils.verifyBlobContents(digest, digestOut.digest());
-            }
-            out.flush();
-            return Futures.immediateFuture(null);
-          } catch (IOException e) {
-            return Futures.immediateFailedFuture(e);
-          }
-        },
+    return RxFutures.toCompletable(
+            () -> download(digest, digestOut != null ? digestOut : out, /* isActionCache= */ false),
+            MoreExecutors.directExecutor())
+        .doOnComplete(
+            () -> {
+              if (digestOut != null) {
+                Utils.verifyBlobContents(digest, digestOut.digest());
+              }
+              out.flush();
+            })
+        .toSingle(out::toByteArray);
+  }
+
+  @Override
+  public Maybe<ActionResult> downloadActionResult(ActionKey actionKey, boolean inlineOutErr) {
+    return RxFutures.toMaybe(
+        () ->
+            Utils.downloadAsActionResult(
+                actionKey, (digest, out) -> download(digest, out, /* isActionCache= */ true)),
         MoreExecutors.directExecutor());
   }
 
   @Override
-  public ListenableFuture<ActionResult> downloadActionResult(
-      ActionKey actionKey, boolean inlineOutErr) {
-    return Utils.downloadAsActionResult(
-        actionKey, (digest, out) -> download(digest, out, /* isActionCache= */ true));
-  }
-
-  @Override
-  public void uploadActionResult(ActionKey actionKey, ActionResult actionResult)
-      throws IOException {
-    try (InputStream data = actionResult.toByteString().newInput()) {
-      saveFile(actionKey.getDigest().getHash(), data, /* actionResult= */ true);
-    }
+  public Completable uploadActionResult(ActionKey actionKey, ActionResult actionResult) {
+    return Completable.fromCallable(() -> {
+      try (InputStream data = actionResult.toByteString().newInput()) {
+        saveFile(actionKey.getDigest().getHash(), data, /* actionResult= */ true);
+      }
+      return null;
+    });
   }
 
   @Override
   public void close() {}
 
   @Override
-  public ListenableFuture<Void> uploadFile(Digest digest, Path file) {
-    try (InputStream in = file.getInputStream()) {
-      saveFile(digest.getHash(), in, /* actionResult= */ false);
-    } catch (IOException e) {
-      return Futures.immediateFailedFuture(e);
-    }
-    return Futures.immediateFuture(null);
+  public Completable uploadFile(Digest digest, Path file) {
+    return Completable.fromCallable(
+        () -> {
+          try (InputStream in = file.getInputStream()) {
+            saveFile(digest.getHash(), in, /* actionResult= */ false);
+          }
+          return null;
+        });
   }
 
   @Override
-  public ListenableFuture<Void> uploadBlob(Digest digest, ByteString data) {
-    try (InputStream in = data.newInput()) {
-      saveFile(digest.getHash(), in, /* actionResult= */ false);
-    } catch (IOException e) {
-      return Futures.immediateFailedFuture(e);
-    }
-    return Futures.immediateFuture(null);
+  public Completable uploadBlob(Digest digest, ByteString data) {
+    return Completable.fromCallable(
+        () -> {
+          try (InputStream in = data.newInput()) {
+            saveFile(digest.getHash(), in, /* actionResult= */ false);
+          }
+          return null;
+        });
   }
 
   @Override
-  public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+  public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
     // Both upload and download check if the file exists before doing I/O. So we don't
     // have to do it here.
-    return Futures.immediateFuture(ImmutableSet.copyOf(digests));
+    return Single.just(ImmutableSet.copyOf(digests));
   }
 
   protected Path toPathNoSplit(String key) {
