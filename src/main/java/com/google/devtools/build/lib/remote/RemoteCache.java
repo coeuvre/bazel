@@ -35,7 +35,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Maps;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.util.concurrent.*;
 import com.google.devtools.build.lib.actions.ActionInput;
@@ -73,23 +72,15 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import javax.annotation.Nullable;
 
 /** A cache for storing artifacts (input and output) as well as the output of running an action. */
@@ -284,6 +275,59 @@ public class RemoteCache implements AutoCloseable {
     return actualPath.getParentDirectory().getRelative(actualPath.getBaseName() + ".tmp");
   }
 
+  private static class TransferResult {
+    @Nullable
+    private final IOException error;
+
+    public static Single<TransferResult> fromCompletable(Completable completable) {
+      return completable.toSingle(TransferResult::success)
+          .onErrorResumeNext(error -> {
+            if (error instanceof IOException) {
+              return Single.just(TransferResult.error((IOException) error));
+            }
+
+            return Single.error(error);
+          });
+    }
+
+    public static TransferResult error(IOException error) {
+      return new TransferResult(error);
+    }
+
+    public static TransferResult success() {
+      return new TransferResult(null);
+    }
+
+    private TransferResult(@Nullable IOException error) {
+      this.error = error;
+    }
+
+    @Nullable
+    public IOException getError() {
+      return error;
+    }
+  }
+
+  private static class BulkTransferResult {
+    @Nullable
+    private BulkTransferException error;
+
+    public void add(TransferResult transferResult) {
+      if (transferResult.getError() != null) {
+        if (error == null) {
+          error = new BulkTransferException();
+        }
+
+        error.add(transferResult.getError());
+      }
+    }
+
+    @Nullable
+    public BulkTransferException getError() {
+      return error;
+    }
+  }
+
   /**
    * Download the output files and directory trees of a remotely executed action to the local
    * machine, as well stdin / stdout to the given files.
@@ -301,107 +345,123 @@ public class RemoteCache implements AutoCloseable {
       FileOutErr origOutErr,
       OutputFilesLocker outputFilesLocker)
       throws ExecException, IOException, InterruptedException {
-    ActionResultMetadata metadata = parseActionResultMetadata(result, execRoot);
-
-    List<ListenableFuture<FileMetadata>> downloads =
-        Stream.concat(
-                metadata.files().stream(),
-                metadata.directories().stream()
-                    .flatMap((entry) -> entry.getValue().files().stream()))
-            .map(
-                (file) -> {
-                  try {
-                    ListenableFuture<Void> download =
-                        downloadFile(toTmpDownloadPath(file.path()), file.digest());
-                    return Futures.transform(download, (d) -> file, directExecutor());
-                  } catch (IOException e) {
-                    return Futures.<FileMetadata>immediateFailedFuture(e);
-                  }
-                })
-            .collect(Collectors.toList());
-
-    // Subsequently we need to wait for *every* download to finish, even if we already know that
-    // one failed. That's so that when exiting this method we can be sure that all downloads have
-    // finished and don't race with the cleanup routine.
-
-    FileOutErr tmpOutErr = null;
+    FileOutErr tmpOutErr;
     if (origOutErr != null) {
       tmpOutErr = origOutErr.childOutErr();
+    } else {
+      tmpOutErr = null;
     }
-    downloads.addAll(downloadOutErr(result, tmpOutErr));
+
+    Completable download =
+        parseActionResultMetadata(result, execRoot)
+            .flatMapCompletable(
+                metadata -> {
+                  List<FileMetadata> files = new ArrayList<>(metadata.files());
+                  for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
+                    files.addAll(entry.getValue().files());
+                  }
+
+                  return Completable.fromSingle(
+                      Flowable.merge(
+                              Flowable.fromIterable(files)
+                                  .flatMapSingle(
+                                      file ->
+                                          TransferResult.fromCompletable(
+                                              downloadFileRx(
+                                                  toTmpDownloadPath(file.path()), file.digest()))),
+                              Flowable.fromSingle(
+                                  TransferResult.fromCompletable(downloadOutErrRx(result, tmpOutErr))))
+                          // Subsequently we need to wait for *every* download to finish, even if we already know that
+                          // one failed. That's so that when exiting this method we can be sure that all downloads have
+                          // finished and don't race with the cleanup routine.
+                          .collect(BulkTransferResult::new, (BulkTransferResult::add))
+                          .doOnSuccess(
+                              bulkTransferResult -> {
+                                if (bulkTransferResult.getError() != null) {
+                                  throw bulkTransferResult.getError();
+                                }
+
+                                if (tmpOutErr != null) {
+                                  FileOutErr.dump(tmpOutErr, origOutErr);
+                                  tmpOutErr.clearOut();
+                                  tmpOutErr.clearErr();
+                                }
+
+                                // Ensure that we are the only ones writing to the output files
+                                // when using the dynamic spawn
+                                // strategy.
+                                outputFilesLocker.lock();
+
+                                moveOutputsToFinalLocation(files);
+
+                                List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
+                                for (Entry<Path, DirectoryMetadata> entry :
+                                    metadata.directories()) {
+                                  entry.getKey().createDirectoryAndParents();
+                                  symlinksInDirectories.addAll(entry.getValue().symlinks());
+                                }
+
+                                Iterable<SymlinkMetadata> symlinks =
+                                    Iterables.concat(metadata.symlinks(), symlinksInDirectories);
+
+                                // Create the symbolic links after all downloads are finished,
+                                // because dangling symlinks might not be supported on all platforms
+                                createSymlinks(symlinks);
+                              })
+                          .doOnError(
+                              e -> {
+                                try {
+                                  // Delete any (partially) downloaded output files.
+                                  for (OutputFile file : result.getOutputFilesList()) {
+                                    toTmpDownloadPath(execRoot.getRelative(file.getPath()))
+                                        .delete();
+                                  }
+                                  for (OutputDirectory directory :
+                                      result.getOutputDirectoriesList()) {
+                                    // Only delete the directories below the output directories
+                                    // because the output
+                                    // directories will not be re-created
+                                    execRoot.getRelative(directory.getPath()).deleteTreesBelow();
+                                  }
+                                  if (tmpOutErr != null) {
+                                    tmpOutErr.clearOut();
+                                    tmpOutErr.clearErr();
+                                  }
+                                } catch (IOException ioEx) {
+                                  ioEx.addSuppressed(e);
+
+                                  // If deleting of output files failed, we abort the build with a
+                                  // decent error message as
+                                  // any subsequent local execution failure would likely be
+                                  // incomprehensible.
+                                  ExecException execEx =
+                                      new EnvironmentalExecException(
+                                          ioEx,
+                                          createFailureDetail(
+                                              "Failed to delete output files after incomplete"
+                                                  + " download",
+                                              Code.INCOMPLETE_OUTPUT_DOWNLOAD_CLEANUP_FAILURE));
+                                  execEx.addSuppressed(e);
+                                  throw execEx;
+                                }
+                              }));
+                });
 
     try {
-      waitForBulkTransfer(downloads, /* cancelRemainingOnInterrupt=*/ true);
-    } catch (Exception e) {
-      try {
-        // Delete any (partially) downloaded output files.
-        for (OutputFile file : result.getOutputFilesList()) {
-          toTmpDownloadPath(execRoot.getRelative(file.getPath())).delete();
-        }
-        for (OutputDirectory directory : result.getOutputDirectoriesList()) {
-          // Only delete the directories below the output directories because the output
-          // directories will not be re-created
-          execRoot.getRelative(directory.getPath()).deleteTreesBelow();
-        }
-        if (tmpOutErr != null) {
-          tmpOutErr.clearOut();
-          tmpOutErr.clearErr();
-        }
-      } catch (IOException ioEx) {
-        ioEx.addSuppressed(e);
-
-        // If deleting of output files failed, we abort the build with a decent error message as
-        // any subsequent local execution failure would likely be incomprehensible.
-        ExecException execEx =
-            new EnvironmentalExecException(
-                ioEx,
-                createFailureDetail(
-                    "Failed to delete output files after incomplete download",
-                    Code.INCOMPLETE_OUTPUT_DOWNLOAD_CLEANUP_FAILURE));
-        execEx.addSuppressed(e);
-        throw execEx;
-      }
+      download.blockingAwait();
+    } catch (Throwable e) {
+      Throwables.throwIfInstanceOf(e.getCause(), ExecException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
       throw e;
     }
-
-    if (tmpOutErr != null) {
-      FileOutErr.dump(tmpOutErr, origOutErr);
-      tmpOutErr.clearOut();
-      tmpOutErr.clearErr();
-    }
-
-    // Ensure that we are the only ones writing to the output files when using the dynamic spawn
-    // strategy.
-    outputFilesLocker.lock();
-
-    moveOutputsToFinalLocation(downloads);
-
-    List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
-    for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
-      entry.getKey().createDirectoryAndParents();
-      symlinksInDirectories.addAll(entry.getValue().symlinks());
-    }
-
-    Iterable<SymlinkMetadata> symlinks =
-        Iterables.concat(metadata.symlinks(), symlinksInDirectories);
-
-    // Create the symbolic links after all downloads are finished, because dangling symlinks
-    // might not be supported on all platforms
-    createSymlinks(symlinks);
   }
 
   /**
    * Copies moves the downloaded outputs from their download location to their declared location.
    */
-  private void moveOutputsToFinalLocation(List<ListenableFuture<FileMetadata>> downloads)
-      throws IOException, InterruptedException {
-    List<FileMetadata> finishedDownloads = new ArrayList<>(downloads.size());
-    for (ListenableFuture<FileMetadata> finishedDownload : downloads) {
-      FileMetadata outputFile = getFromFuture(finishedDownload);
-      if (outputFile != null) {
-        finishedDownloads.add(outputFile);
-      }
-    }
+  private void moveOutputsToFinalLocation(List<FileMetadata> finishedDownloads)
+      throws IOException {
     /*
      * Sort the list lexicographically based on its temporary download path in order to avoid
      * filename clashes when moving the files:
@@ -411,7 +471,7 @@ public class RemoteCache implements AutoCloseable {
      * ensure that rename(foo.tmp, foo) happens before rename(foo.tmp.tmp, foo.tmp). We ensure this
      * by doing the renames in lexicographical order of the download names.
      */
-    Collections.sort(finishedDownloads, Comparator.comparing(f -> toTmpDownloadPath(f.path())));
+    finishedDownloads.sort(Comparator.comparing(f -> toTmpDownloadPath(f.path())));
 
     // Move the output files from their temporary name to the actual output file name.
     for (FileMetadata outputFile : finishedDownloads) {
@@ -441,37 +501,55 @@ public class RemoteCache implements AutoCloseable {
 
   /** Downloads a file (that is not a directory). The content is fetched from the digest. */
   public ListenableFuture<Void> downloadFile(Path path, Digest digest) throws IOException {
-    Preconditions.checkNotNull(path.getParentDirectory()).createDirectoryAndParents();
+    return RxFutures.toListenableFuture(downloadFileRx(path, digest), MoreExecutors.directExecutor());
+  }
+
+  private Completable downloadFileRx(Path path, Digest digest) {
+    Completable createParentDirs =
+        Completable.fromCallable(
+            () -> {
+              Preconditions.checkNotNull(path.getParentDirectory()).createDirectoryAndParents();
+              return null;
+            });
+
+    Completable download;
     if (digest.getSizeBytes() == 0) {
       // Handle empty file locally.
-      FileSystemUtils.writeContent(path, new byte[0]);
-      return COMPLETED_SUCCESS;
+      download =
+          Completable.fromCallable(
+              () -> {
+                FileSystemUtils.writeContent(path, new byte[0]);
+                return null;
+              });
+    } else if (!options.remoteDownloadSymlinkTemplate.isEmpty()) {
+      download =
+          Completable.fromCallable(
+              () -> {
+                // Don't actually download files from the CAS. Instead, create a
+                // symbolic link that points to a location where CAS objects may
+                // be found. This could, for example, be a FUSE file system.
+                path.createSymbolicLink(
+                    path.getRelative(
+                        options
+                            .remoteDownloadSymlinkTemplate
+                            .replace("{hash}", digest.getHash())
+                            .replace("{size_bytes}", String.valueOf(digest.getSizeBytes()))));
+                return null;
+              });
+    } else {
+      download =
+          Completable.fromSingle(
+              cacheProtocol
+                  .downloadBlob(digest)
+                  .doOnSuccess(
+                      data -> {
+                        try (OutputStream out = path.getOutputStream()) {
+                          out.write(data);
+                        }
+                      }));
     }
 
-    if (!options.remoteDownloadSymlinkTemplate.isEmpty()) {
-      // Don't actually download files from the CAS. Instead, create a
-      // symbolic link that points to a location where CAS objects may
-      // be found. This could, for example, be a FUSE file system.
-      path.createSymbolicLink(
-          path.getRelative(
-              options
-                  .remoteDownloadSymlinkTemplate
-                  .replace("{hash}", digest.getHash())
-                  .replace("{size_bytes}", String.valueOf(digest.getSizeBytes()))));
-      return COMPLETED_SUCCESS;
-    }
-
-    return RxFutures.toListenableFuture(
-        Completable.fromSingle(
-            cacheProtocol
-                .downloadBlob(digest)
-                .doOnSuccess(
-                    data -> {
-                      try (OutputStream out = path.getOutputStream()) {
-                        out.write(data);
-                      }
-                    })),
-        directExecutor());
+    return Completable.concatArray(createParentDirs, download);
   }
 
   private List<ListenableFuture<FileMetadata>> downloadOutErr(ActionResult result, OutErr outErr) {
@@ -510,7 +588,7 @@ public class RemoteCache implements AutoCloseable {
               .downloadBlob(result.getStderrDigest())
               .doOnSuccess(
                   data -> {
-                    try (OutputStream out = outErr.getOutputStream()) {
+                    try (OutputStream out = outErr.getErrorStream()) {
                       out.write(data);
                     }
                   })
@@ -519,6 +597,60 @@ public class RemoteCache implements AutoCloseable {
       downloads.add(RxFutures.toListenableFuture(maybe, directExecutor()));
     }
     return downloads;
+  }
+
+  private Completable downloadOutErrRx(ActionResult result, OutErr outErr) {
+    if (outErr == null) {
+      return Completable.complete();
+    }
+
+    Completable stdoutDownload;
+    if (!result.getStdoutRaw().isEmpty()) {
+      stdoutDownload =
+          Completable.fromCallable(
+              () -> {
+                result.getStdoutRaw().writeTo(outErr.getOutputStream());
+                outErr.getOutputStream().flush();
+                return null;
+              });
+    } else {
+      stdoutDownload =
+          Completable.fromSingle(
+              cacheProtocol
+                  .downloadBlob(result.getStdoutDigest())
+                  .doOnSuccess(
+                      data -> {
+                        try (OutputStream out = outErr.getOutputStream()) {
+                          out.write(data);
+                        }
+                      }));
+    }
+
+    Completable stderrDownload;
+    if (!result.getStderrRaw().isEmpty()) {
+      stderrDownload =
+          Completable.fromCallable(
+              () -> {
+                result.getStderrRaw().writeTo(outErr.getErrorStream());
+                outErr.getErrorStream().flush();
+                return null;
+              });
+    } else if (result.hasStderrDigest()) {
+      stderrDownload =
+          Completable.fromSingle(
+              cacheProtocol
+                  .downloadBlob(result.getStderrDigest())
+                  .doOnSuccess(
+                      data -> {
+                        try (OutputStream out = outErr.getErrorStream()) {
+                          out.write(data);
+                        }
+                      }));
+    } else {
+      stderrDownload = Completable.complete();
+    }
+
+    return Completable.mergeArray(stdoutDownload, stderrDownload);
   }
 
   /**
@@ -558,7 +690,13 @@ public class RemoteCache implements AutoCloseable {
 
     ActionResultMetadata metadata;
     try (SilentCloseable c = Profiler.instance().profile("Remote.parseActionResultMetadata")) {
-      metadata = parseActionResultMetadata(result, execRoot);
+      try {
+        metadata = parseActionResultMetadata(result, execRoot).blockingGet();
+      } catch (Throwable t) {
+        Throwables.throwIfInstanceOf(t.getCause(), IOException.class);
+        Throwables.throwIfInstanceOf(t.getCause(), InterruptedException.class);
+        throw t;
+      }
     }
 
     if (!metadata.symlinks().isEmpty()) {
@@ -685,64 +823,72 @@ public class RemoteCache implements AutoCloseable {
     return new DirectoryMetadata(filesBuilder.build(), symlinksBuilder.build());
   }
 
-  private ActionResultMetadata parseActionResultMetadata(ActionResult actionResult, Path execRoot)
-      throws IOException, InterruptedException {
+  private Single<ActionResultMetadata> parseActionResultMetadata(
+      ActionResult actionResult, Path execRoot) {
     Preconditions.checkNotNull(actionResult, "actionResult");
-    Map<Path, ListenableFuture<Tree>> dirMetadataDownloads =
-        Maps.newHashMapWithExpectedSize(actionResult.getOutputDirectoriesCount());
-    for (OutputDirectory dir : actionResult.getOutputDirectoriesList()) {
-      dirMetadataDownloads.put(
-          execRoot.getRelative(dir.getPath()),
-          Futures.transform(
-              downloadBlob(dir.getTreeDigest()),
-              (treeBytes) -> {
-                try {
-                  return Tree.parseFrom(treeBytes);
-                } catch (InvalidProtocolBufferException e) {
-                  throw new RuntimeException(e);
-                }
-              },
-              directExecutor()));
-    }
+    return Single.just(ImmutableMap.<Path, DirectoryMetadata>builder())
+        .flatMap(
+            directories ->
+                Flowable.fromIterable(actionResult.getOutputDirectoriesList())
+                    .flatMapSingle(
+                        dir -> {
+                          Path path = execRoot.getRelative(dir.getPath());
 
-    waitForBulkTransfer(dirMetadataDownloads.values(), /* cancelRemainingOnInterrupt=*/ true);
+                          return TransferResult.fromCompletable(
+                              Completable.fromSingle(
+                                  cacheProtocol
+                                      .downloadBlob(dir.getTreeDigest())
+                                      .doOnSuccess(
+                                          treeBytes -> {
+                                            Tree directoryTree = Tree.parseFrom(treeBytes);
+                                            Map<Digest, Directory> childrenMap = new HashMap<>();
+                                            for (Directory childDir :
+                                                directoryTree.getChildrenList()) {
+                                              childrenMap.put(
+                                                  digestUtil.compute(childDir), childDir);
+                                            }
 
-    ImmutableMap.Builder<Path, DirectoryMetadata> directories = ImmutableMap.builder();
-    for (Map.Entry<Path, ListenableFuture<Tree>> metadataDownload :
-        dirMetadataDownloads.entrySet()) {
-      Path path = metadataDownload.getKey();
-      Tree directoryTree = getFromFuture(metadataDownload.getValue());
-      Map<Digest, Directory> childrenMap = new HashMap<>();
-      for (Directory childDir : directoryTree.getChildrenList()) {
-        childrenMap.put(digestUtil.compute(childDir), childDir);
-      }
+                                            directories.put(
+                                                path,
+                                                parseDirectory(
+                                                    path, directoryTree.getRoot(), childrenMap));
+                                          })));
+                        })
+                    .collect(BulkTransferResult::new, BulkTransferResult::add)
+                    .doOnSuccess(
+                        bulkTransferResult -> {
+                          if (bulkTransferResult.getError() != null) {
+                            throw bulkTransferResult.getError();
+                          }
+                        })
+                    .map(unused -> directories))
+        .map(
+            directories -> {
+              ImmutableMap.Builder<Path, FileMetadata> files = ImmutableMap.builder();
+              for (OutputFile outputFile : actionResult.getOutputFilesList()) {
+                files.put(
+                    execRoot.getRelative(outputFile.getPath()),
+                    new FileMetadata(
+                        execRoot.getRelative(outputFile.getPath()),
+                        outputFile.getDigest(),
+                        outputFile.getIsExecutable()));
+              }
 
-      directories.put(path, parseDirectory(path, directoryTree.getRoot(), childrenMap));
-    }
+              ImmutableMap.Builder<Path, SymlinkMetadata> symlinks = ImmutableMap.builder();
+              Iterable<OutputSymlink> outputSymlinks =
+                  Iterables.concat(
+                      actionResult.getOutputFileSymlinksList(),
+                      actionResult.getOutputDirectorySymlinksList());
+              for (OutputSymlink symlink : outputSymlinks) {
+                symlinks.put(
+                    execRoot.getRelative(symlink.getPath()),
+                    new SymlinkMetadata(
+                        execRoot.getRelative(symlink.getPath()),
+                        PathFragment.create(symlink.getTarget())));
+              }
 
-    ImmutableMap.Builder<Path, FileMetadata> files = ImmutableMap.builder();
-    for (OutputFile outputFile : actionResult.getOutputFilesList()) {
-      files.put(
-          execRoot.getRelative(outputFile.getPath()),
-          new FileMetadata(
-              execRoot.getRelative(outputFile.getPath()),
-              outputFile.getDigest(),
-              outputFile.getIsExecutable()));
-    }
-
-    ImmutableMap.Builder<Path, SymlinkMetadata> symlinks = ImmutableMap.builder();
-    Iterable<OutputSymlink> outputSymlinks =
-        Iterables.concat(
-            actionResult.getOutputFileSymlinksList(),
-            actionResult.getOutputDirectorySymlinksList());
-    for (OutputSymlink symlink : outputSymlinks) {
-      symlinks.put(
-          execRoot.getRelative(symlink.getPath()),
-          new SymlinkMetadata(
-              execRoot.getRelative(symlink.getPath()), PathFragment.create(symlink.getTarget())));
-    }
-
-    return new ActionResultMetadata(files.build(), symlinks.build(), directories.build());
+              return new ActionResultMetadata(files.build(), symlinks.build(), directories.build());
+            });
   }
 
   /** UploadManifest adds output metadata to a {@link ActionResult}. */

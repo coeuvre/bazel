@@ -1567,7 +1567,13 @@ public class RemoteCacheTests {
 
     Digest addContents(byte[] bytes) throws IOException, InterruptedException {
       Digest digest = digestUtil.compute(bytes);
-      Utils.getFromFuture(cacheProtocol.uploadBlob(digest, ByteString.copyFrom(bytes)));
+      try {
+        cacheProtocol.uploadBlob(digest, ByteString.copyFrom(bytes)).blockingAwait();
+      } catch (Throwable t) {
+        Throwables.throwIfInstanceOf(t.getCause(), IOException.class);
+        Throwables.throwIfInstanceOf(t.getCause(), InterruptedException.class);
+        throw t;
+      }
       return digest;
     }
 
@@ -1597,7 +1603,13 @@ public class RemoteCacheTests {
 
     ImmutableSet<Digest> findMissingDigests(Iterable<Digest> digests)
         throws IOException, InterruptedException {
-      return Utils.getFromFuture(cacheProtocol.findMissingDigests(digests));
+      try {
+        return cacheProtocol.findMissingDigests(digests).blockingGet();
+      } catch (Throwable t) {
+        Throwables.throwIfInstanceOf(t.getCause(), IOException.class);
+        Throwables.throwIfInstanceOf(t.getCause(), InterruptedException.class);
+        throw t;
+      }
     }
 
     @Override

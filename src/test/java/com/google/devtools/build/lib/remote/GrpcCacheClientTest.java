@@ -46,6 +46,7 @@ import com.google.bytestream.ByteStreamProto.ReadRequest;
 import com.google.bytestream.ByteStreamProto.ReadResponse;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
@@ -244,9 +245,12 @@ public class GrpcCacheClientTest {
 
   private static byte[] downloadBlob(GrpcCacheClient cacheClient, Digest digest)
       throws IOException, InterruptedException {
-    try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-      getFromFuture(cacheClient.downloadBlob(digest, out));
-      return out.toByteArray();
+    try {
+      return cacheClient.downloadBlob(digest).blockingGet();
+    } catch (Throwable t) {
+      Throwables.throwIfInstanceOf(t.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(t.getCause(), InterruptedException.class);
+      throw t;
     }
   }
 

@@ -74,6 +74,8 @@ import java.util.Random;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
+import io.reactivex.rxjava3.core.Single;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -391,14 +393,14 @@ public class ByteStreamBuildEventArtifactUploaderTest {
     }
 
     @Override
-    public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+    public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
       ImmutableSet.Builder<Digest> missingDigests = ImmutableSet.builder();
       for (Digest digest : digests) {
         if (!knownDigests.contains(digest)) {
           missingDigests.add(digest);
         }
       }
-      return Futures.immediateFuture(missingDigests.build());
+      return Single.just(missingDigests.build());
     }
   }
 
@@ -407,8 +409,8 @@ public class ByteStreamBuildEventArtifactUploaderTest {
     public static final AllMissingDigestsFinder INSTANCE = new AllMissingDigestsFinder();
 
     @Override
-    public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
-      return Futures.immediateFuture(ImmutableSet.copyOf(digests));
+    public Single<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
+      return Single.just(ImmutableSet.copyOf(digests));
     }
   }
 }

@@ -75,6 +75,10 @@ public class InMemoryCacheClient implements RemoteCacheClient {
       return Single.error(failure);
     }
 
+    if (digest.getSizeBytes() == 0) {
+      return Single.just(new byte[0]);
+    }
+
     byte[] data = cas.get(digest);
     if (data == null) {
       return Single.error(new CacheNotFoundException(digest));
