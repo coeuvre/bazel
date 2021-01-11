@@ -134,20 +134,29 @@ public class RemoteCache implements AutoCloseable {
       FileOutErr outErr,
       int exitCode)
       throws ExecException, IOException, InterruptedException {
-    ActionResult.Builder resultBuilder = ActionResult.newBuilder();
-    uploadOutputs(execRoot, actionKey, action, command, outputs, outErr, resultBuilder);
-    resultBuilder.setExitCode(exitCode);
-    ActionResult result = resultBuilder.build();
-    if (exitCode == 0 && !action.getDoNotCache()) {
-      try {
-        cacheProtocol.uploadActionResult(actionKey, result).blockingAwait();
-      } catch (RuntimeException e) {
-        Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
-        Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
-        throw e;
-      }
+    ActionResult.Builder resultBuilder = ActionResult.newBuilder().setExitCode(exitCode);
+    Completable upload =
+        uploadOutputs(execRoot, actionKey, action, command, outputs, outErr, resultBuilder)
+            .andThen(
+                Completable.defer(
+                    () -> {
+                      ActionResult result = resultBuilder.build();
+                      if (exitCode == 0 && !action.getDoNotCache()) {
+                        return cacheProtocol.uploadActionResult(actionKey, result);
+                      }
+
+                      return Completable.complete();
+                    }));
+
+    try {
+      upload.blockingAwait();
+      return resultBuilder.build();
+    } catch (RuntimeException e) {
+      Throwables.throwIfInstanceOf(e.getCause(), ExecException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
+      throw e;
     }
-    return result;
   }
 
   public ActionResult upload(
@@ -161,7 +170,28 @@ public class RemoteCache implements AutoCloseable {
     return upload(actionKey, action, command, execRoot, outputs, outErr, /* exitCode= */ 0);
   }
 
-  private void uploadOutputs(
+  private Single<TransferResult> uploadOutput(
+      Map<Digest, Path> digestToFile, Map<Digest, ByteString> digestToBlobs, Digest digest) {
+    Completable upload = null;
+    Path file = digestToFile.get(digest);
+    if (file != null) {
+      upload = cacheProtocol.uploadFile(digest, file);
+    } else {
+      ByteString blob = digestToBlobs.get(digest);
+      if (blob != null) {
+        upload = cacheProtocol.uploadBlob(digest, blob);
+      }
+    }
+
+    if (upload == null) {
+      String message = "FindMissingBlobs call returned an unknown digest: " + digest;
+      upload = Completable.error(new IOException(message));
+    }
+
+    return TransferResult.fromCompletable(upload);
+  }
+
+  private Completable uploadOutputs(
       Path execRoot,
       ActionKey actionKey,
       Action action,
@@ -169,7 +199,7 @@ public class RemoteCache implements AutoCloseable {
       Collection<Path> files,
       FileOutErr outErr,
       ActionResult.Builder result)
-      throws ExecException, IOException, InterruptedException {
+      throws ExecException, IOException {
     UploadManifest manifest =
         new UploadManifest(
             digestUtil,
@@ -187,33 +217,27 @@ public class RemoteCache implements AutoCloseable {
     digests.addAll(digestToFile.keySet());
     digests.addAll(digestToBlobs.keySet());
 
-    ImmutableSet<Digest> digestsToUpload =
-        getFromFuture(
-            RxFutures.toListenableFuture(
-                cacheProtocol.findMissingDigests(digests), MoreExecutors.directExecutor()));
-    ImmutableList.Builder<ListenableFuture<Void>> uploads = ImmutableList.builder();
-    for (Digest digest : digestsToUpload) {
-      Path file = digestToFile.get(digest);
-      if (file != null) {
-        uploads.add(RxFutures.toListenableFuture(cacheProtocol.uploadFile(digest, file), MoreExecutors.directExecutor()));
-      } else {
-        ByteString blob = digestToBlobs.get(digest);
-        if (blob == null) {
-          String message = "FindMissingBlobs call returned an unknown digest: " + digest;
-          throw new IOException(message);
-        }
-        uploads.add(RxFutures.toListenableFuture(cacheProtocol.uploadBlob(digest, blob), MoreExecutors.directExecutor()));
-      }
-    }
+    return Completable.fromSingle(
+        cacheProtocol
+            .findMissingDigests(digests)
+            .flatMap(
+                digestsToUpload ->
+                    Flowable.fromIterable(digestsToUpload)
+                        .flatMapSingle(digest -> uploadOutput(digestToFile, digestToBlobs, digest))
+                        .collect(BulkTransferResult::new, (BulkTransferResult::add)))
+            .doOnSuccess(
+                bulkTransferResult -> {
+                  if (bulkTransferResult.getError() != null) {
+                    throw bulkTransferResult.getError();
+                  }
 
-    waitForBulkTransfer(uploads.build(), /* cancelRemainingOnInterrupt=*/ false);
-
-    if (manifest.getStderrDigest() != null) {
-      result.setStderrDigest(manifest.getStderrDigest());
-    }
-    if (manifest.getStdoutDigest() != null) {
-      result.setStdoutDigest(manifest.getStdoutDigest());
-    }
+                  if (manifest.getStderrDigest() != null) {
+                    result.setStderrDigest(manifest.getStderrDigest());
+                  }
+                  if (manifest.getStdoutDigest() != null) {
+                    result.setStdoutDigest(manifest.getStdoutDigest());
+                  }
+                }));
   }
 
   public static void waitForBulkTransfer(
@@ -328,6 +352,57 @@ public class RemoteCache implements AutoCloseable {
     }
   }
 
+  private Single<BulkTransferResult> downloadFilesAndOutErr(
+      List<FileMetadata> files, ActionResult result, OutErr outErr) {
+    return Flowable.merge(
+            Flowable.fromIterable(files)
+                .flatMapSingle(
+                    file ->
+                        TransferResult.fromCompletable(
+                            downloadFileRx(toTmpDownloadPath(file.path()), file.digest()))),
+            Flowable.fromSingle(TransferResult.fromCompletable(downloadOutErrRx(result, outErr))))
+        // Subsequently we need to wait for *every* download to finish, even if we already know that
+        // one failed. That's so that when exiting this method we can be sure that all downloads
+        // have
+        // finished and don't race with the cleanup routine.
+        .collect(BulkTransferResult::new, (BulkTransferResult::add));
+  }
+
+  private void deleteDownloadedFiles(
+      Throwable e, ActionResult result, Path execRoot, FileOutErr tmpOutErr) throws ExecException {
+    try {
+      // Delete any (partially) downloaded output files.
+      for (OutputFile file : result.getOutputFilesList()) {
+        toTmpDownloadPath(execRoot.getRelative(file.getPath())).delete();
+      }
+      for (OutputDirectory directory : result.getOutputDirectoriesList()) {
+        // Only delete the directories below the output directories
+        // because the output
+        // directories will not be re-created
+        execRoot.getRelative(directory.getPath()).deleteTreesBelow();
+      }
+      if (tmpOutErr != null) {
+        tmpOutErr.clearOut();
+        tmpOutErr.clearErr();
+      }
+    } catch (IOException ioEx) {
+      ioEx.addSuppressed(e);
+
+      // If deleting of output files failed, we abort the build with a
+      // decent error message as
+      // any subsequent local execution failure would likely be
+      // incomprehensible.
+      ExecException execEx =
+          new EnvironmentalExecException(
+              ioEx,
+              createFailureDetail(
+                  "Failed to delete output files after incomplete" + " download",
+                  Code.INCOMPLETE_OUTPUT_DOWNLOAD_CLEANUP_FAILURE));
+      execEx.addSuppressed(e);
+      throw execEx;
+    }
+  }
+
   /**
    * Download the output files and directory trees of a remotely executed action to the local
    * machine, as well stdin / stdout to the given files.
@@ -362,19 +437,7 @@ public class RemoteCache implements AutoCloseable {
                   }
 
                   return Completable.fromSingle(
-                      Flowable.merge(
-                              Flowable.fromIterable(files)
-                                  .flatMapSingle(
-                                      file ->
-                                          TransferResult.fromCompletable(
-                                              downloadFileRx(
-                                                  toTmpDownloadPath(file.path()), file.digest()))),
-                              Flowable.fromSingle(
-                                  TransferResult.fromCompletable(downloadOutErrRx(result, tmpOutErr))))
-                          // Subsequently we need to wait for *every* download to finish, even if we already know that
-                          // one failed. That's so that when exiting this method we can be sure that all downloads have
-                          // finished and don't race with the cleanup routine.
-                          .collect(BulkTransferResult::new, (BulkTransferResult::add))
+                      downloadFilesAndOutErr(files, result, tmpOutErr)
                           .doOnSuccess(
                               bulkTransferResult -> {
                                 if (bulkTransferResult.getError() != null) {
@@ -408,43 +471,7 @@ public class RemoteCache implements AutoCloseable {
                                 // because dangling symlinks might not be supported on all platforms
                                 createSymlinks(symlinks);
                               })
-                          .doOnError(
-                              e -> {
-                                try {
-                                  // Delete any (partially) downloaded output files.
-                                  for (OutputFile file : result.getOutputFilesList()) {
-                                    toTmpDownloadPath(execRoot.getRelative(file.getPath()))
-                                        .delete();
-                                  }
-                                  for (OutputDirectory directory :
-                                      result.getOutputDirectoriesList()) {
-                                    // Only delete the directories below the output directories
-                                    // because the output
-                                    // directories will not be re-created
-                                    execRoot.getRelative(directory.getPath()).deleteTreesBelow();
-                                  }
-                                  if (tmpOutErr != null) {
-                                    tmpOutErr.clearOut();
-                                    tmpOutErr.clearErr();
-                                  }
-                                } catch (IOException ioEx) {
-                                  ioEx.addSuppressed(e);
-
-                                  // If deleting of output files failed, we abort the build with a
-                                  // decent error message as
-                                  // any subsequent local execution failure would likely be
-                                  // incomprehensible.
-                                  ExecException execEx =
-                                      new EnvironmentalExecException(
-                                          ioEx,
-                                          createFailureDetail(
-                                              "Failed to delete output files after incomplete"
-                                                  + " download",
-                                              Code.INCOMPLETE_OUTPUT_DOWNLOAD_CLEANUP_FAILURE));
-                                  execEx.addSuppressed(e);
-                                  throw execEx;
-                                }
-                              }));
+                          .doOnError(e -> deleteDownloadedFiles(e, result, execRoot, tmpOutErr)));
                 });
 
     try {
