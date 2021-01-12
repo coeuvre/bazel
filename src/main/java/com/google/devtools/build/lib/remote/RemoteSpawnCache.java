@@ -20,7 +20,6 @@ import static com.google.devtools.build.lib.remote.util.Utils.hasFilesToDownload
 import static com.google.devtools.build.lib.remote.util.Utils.shouldDownloadAllSpawnOutputs;
 
 import build.bazel.remote.execution.v2.Action;
-import build.bazel.remote.execution.v2.ActionResult;
 import build.bazel.remote.execution.v2.Command;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.Platform;
@@ -36,6 +35,7 @@ import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.Spawns;
+import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.analysis.platform.PlatformUtils;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -60,12 +60,17 @@ import com.google.devtools.build.lib.remote.util.Utils.InMemoryOutput;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import io.grpc.Context;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.SortedMap;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
 
 /** A remote {@link SpawnCache} implementation. */
@@ -113,14 +118,35 @@ final class RemoteSpawnCache implements SpawnCache {
     this.filesToDownload = Preconditions.checkNotNull(filesToDownload, "filesToDownload");
   }
 
-  @Override
-  public CacheHandle lookup(Spawn spawn, SpawnExecutionContext context)
-      throws InterruptedException, IOException, ExecException {
+  public <T> Maybe<T> profile(Maybe<T> maybe, ProfilerTask task, String description) {
+    return Maybe.defer(
+        () -> {
+          AtomicReference<SilentCloseable> closeableRef = new AtomicReference<>(null);
+          return maybe
+              .doOnSubscribe(
+                  (s) -> closeableRef.set(Profiler.instance().profile(task, description)))
+              .doFinally(() -> closeableRef.get().close());
+        });
+  }
+
+  public Completable profile(Completable completable, ProfilerTask task, String description) {
+    return Completable.defer(
+        () -> {
+          AtomicReference<SilentCloseable> closeableRef = new AtomicReference<>(null);
+          return completable
+              .doOnSubscribe(
+                  (s) -> closeableRef.set(Profiler.instance().profile(task, description)))
+              .doFinally(() -> closeableRef.get().close());
+        });
+  }
+
+  public Single<CacheHandle> lookupRx(Spawn spawn, SpawnExecutionContext context)
+      throws IOException, UserExecException {
     if (!Spawns.mayBeCached(spawn)
         || (!Spawns.mayBeCachedRemotely(spawn) && useRemoteCache(options))) {
       // returning SpawnCache.NO_RESULT_NO_STORE in case the caching is disabled or in case
       // the remote caching is disabled and the only configured cache is remote.
-      return SpawnCache.NO_RESULT_NO_STORE;
+      return Single.just(SpawnCache.NO_RESULT_NO_STORE);
     }
 
     NetworkTime networkTime = new NetworkTime();
@@ -149,6 +175,7 @@ final class RemoteSpawnCache implements SpawnCache {
     Action action =
         RemoteSpawnRunner.buildAction(
             digestUtil.compute(command), merkleTreeRoot, context.getTimeout(), true);
+
     // Look up action cache, and reuse the action output if it is found.
     ActionKey actionKey = digestUtil.computeActionKey(action);
     Context withMetadata =
@@ -156,168 +183,226 @@ final class RemoteSpawnCache implements SpawnCache {
             .withValue(NetworkTime.CONTEXT_KEY, networkTime);
 
     Profiler prof = Profiler.instance();
+
+    Maybe<CacheHandle> lookup;
     if (options.remoteAcceptCached
         || (options.incompatibleRemoteResultsIgnoreDisk && useDiskCache(options))) {
       context.report(ProgressStatus.CHECKING_CACHE, "remote-cache");
-      // Metadata will be available in context.current() until we detach.
-      // This is done via a thread-local variable.
-      Context previous = withMetadata.attach();
+
       try {
-        ActionResult result;
-        try (SilentCloseable c = prof.profile(ProfilerTask.REMOTE_CACHE_CHECK, "check cache hit")) {
-          result = remoteCache.downloadActionResult(actionKey, /* inlineOutErr= */ false);
-        }
-        // In case the remote cache returned a failed action (exit code != 0) we treat it as a
-        // cache miss
-        if (result != null && result.getExitCode() == 0) {
-          InMemoryOutput inMemoryOutput = null;
-          boolean downloadOutputs =
-              shouldDownloadAllSpawnOutputs(
-                  remoteOutputsMode,
-                  /* exitCode = */ 0,
-                  hasFilesToDownload(spawn.getOutputFiles(), filesToDownload));
-          Stopwatch fetchTime = Stopwatch.createStarted();
-          if (downloadOutputs) {
-            try (SilentCloseable c =
-                prof.profile(ProfilerTask.REMOTE_DOWNLOAD, "download outputs")) {
-              remoteCache.download(
-                  result, execRoot, context.getFileOutErr(), context::lockOutputFiles);
-            }
-          } else {
-            PathFragment inMemoryOutputPath = getInMemoryOutputPath(spawn);
-            // inject output metadata
-            try (SilentCloseable c =
-                prof.profile(ProfilerTask.REMOTE_DOWNLOAD, "download outputs minimal")) {
-              inMemoryOutput =
-                  remoteCache.downloadMinimal(
-                      actionKey.getDigest().getHash(),
-                      result,
-                      spawn.getOutputFiles(),
-                      inMemoryOutputPath,
-                      context.getFileOutErr(),
-                      execRoot,
-                      context.getMetadataInjector(),
-                      context::lockOutputFiles);
-            }
-          }
-          fetchTime.stop();
-          totalTime.stop();
-          spawnMetrics
-              .setFetchTime(fetchTime.elapsed())
-              .setTotalTime(totalTime.elapsed())
-              .setNetworkTime(networkTime.getDuration());
-          SpawnResult spawnResult =
-              createSpawnResult(
-                  result.getExitCode(),
-                  /*cacheHit=*/ true,
-                  "remote",
-                  inMemoryOutput,
-                  spawnMetrics.build(),
-                  spawn.getMnemonic());
-          return SpawnCache.success(spawnResult);
-        }
-      } catch (CacheNotFoundException e) {
-        // Intentionally left blank
-      } catch (IOException e) {
-        if (BulkTransferException.isOnlyCausedByCacheNotFoundException(e)) {
-          // Intentionally left blank
-        } else {
-          String errorMessage;
-          if (!verboseFailures) {
-            errorMessage = Utils.grpcAwareErrorMessage(e);
-          } else {
-            // On --verbose_failures print the whole stack trace
-            errorMessage = Throwables.getStackTraceAsString(e);
-          }
-          if (isNullOrEmpty(errorMessage)) {
-            errorMessage = e.getClass().getSimpleName();
-          }
-          errorMessage = "Reading from Remote Cache:\n" + errorMessage;
-          report(Event.warn(errorMessage));
-        }
-      } finally {
-        withMetadata.detach(previous);
+        lookup =
+            withMetadata
+                .call(() -> remoteCache.downloadActionResultRx(actionKey, /* inlineOutErr */ false))
+                .flatMap(
+                    result -> {
+                      if (result.getExitCode() == 0) {
+                        AtomicReference<InMemoryOutput> inMemoryOutput =
+                            new AtomicReference<>(null);
+                        boolean downloadOutputs =
+                            shouldDownloadAllSpawnOutputs(
+                                remoteOutputsMode,
+                                /* exitCode = */ 0,
+                                hasFilesToDownload(spawn.getOutputFiles(), filesToDownload));
+                        Stopwatch fetchTime = Stopwatch.createUnstarted();
+
+                        Completable download;
+                        if (downloadOutputs) {
+                          download =
+                              withMetadata.call(
+                                  () ->
+                                      remoteCache.downloadRx(
+                                          result,
+                                          execRoot,
+                                          context.getFileOutErr(),
+                                          context::lockOutputFiles));
+                        } else {
+                          PathFragment inMemoryOutputPath = getInMemoryOutputPath(spawn);
+                          download =
+                              Completable.fromCallable(
+                                  () ->
+                                      withMetadata.call(
+                                          () -> {
+                                            try (SilentCloseable c =
+                                                prof.profile(
+                                                    ProfilerTask.REMOTE_DOWNLOAD,
+                                                    "download outputs minimal")) {
+                                              // inject output metadata
+                                              InMemoryOutput output =
+                                                  remoteCache.downloadMinimal(
+                                                      actionKey.getDigest().getHash(),
+                                                      result,
+                                                      spawn.getOutputFiles(),
+                                                      inMemoryOutputPath,
+                                                      context.getFileOutErr(),
+                                                      execRoot,
+                                                      context.getMetadataInjector(),
+                                                      context::lockOutputFiles);
+                                              inMemoryOutput.set(output);
+                                            }
+                                            return null;
+                                          }));
+                        }
+
+                        return Completable.complete()
+                            .doOnComplete(fetchTime::start)
+                            .andThen(download)
+                            .toSingle(
+                                () -> {
+                                  fetchTime.stop();
+                                  totalTime.stop();
+                                  spawnMetrics
+                                      .setFetchTime(fetchTime.elapsed())
+                                      .setTotalTime(totalTime.elapsed())
+                                      .setNetworkTime(networkTime.getDuration());
+                                  SpawnResult spawnResult =
+                                      createSpawnResult(
+                                          result.getExitCode(),
+                                          /*cacheHit=*/ true,
+                                          "remote",
+                                          inMemoryOutput.get(),
+                                          spawnMetrics.build(),
+                                          spawn.getMnemonic());
+
+                                  return SpawnCache.success(spawnResult);
+                                })
+                            .toMaybe();
+                      }
+
+                      return Maybe.empty();
+                    })
+                .onErrorResumeNext(
+                    e -> {
+                      if (e instanceof CacheNotFoundException) {
+                        return Maybe.empty();
+                      } else if (e instanceof IOException) {
+                        if (BulkTransferException.isOnlyCausedByCacheNotFoundException(
+                            (IOException) e)) {
+                          // Intentionally left blank
+                        } else {
+                          String errorMessage;
+                          if (!verboseFailures) {
+                            errorMessage = Utils.grpcAwareErrorMessage((IOException) e);
+                          } else {
+                            // On --verbose_failures print the whole stack trace
+                            errorMessage = Throwables.getStackTraceAsString(e);
+                          }
+                          if (isNullOrEmpty(errorMessage)) {
+                            errorMessage = e.getClass().getSimpleName();
+                          }
+                          errorMessage = "Reading from Remote Cache:\n" + errorMessage;
+                          report(Event.warn(errorMessage));
+                        }
+
+                        return Maybe.empty();
+                      }
+
+                      return Maybe.error(e);
+                    });
+      } catch (Exception e) {
+        lookup = Maybe.error(e);
       }
+    } else {
+      lookup = Maybe.empty();
     }
 
-    context.prefetchInputs();
+    return lookup.switchIfEmpty(
+        Single.fromCallable(
+            () -> {
+              context.prefetchInputs();
 
-    if (options.remoteUploadLocalResults
-        || (options.incompatibleRemoteResultsIgnoreDisk && useDiskCache(options))) {
-      return new CacheHandle() {
-        @Override
-        public boolean hasResult() {
-          return false;
-        }
+              if (options.remoteUploadLocalResults
+                  || (options.incompatibleRemoteResultsIgnoreDisk && useDiskCache(options))) {
+                return new CacheHandle() {
+                  @Override
+                  public boolean hasResult() {
+                    return false;
+                  }
 
-        @Override
-        public SpawnResult getResult() {
-          throw new NoSuchElementException();
-        }
+                  @Override
+                  public SpawnResult getResult() {
+                    throw new NoSuchElementException();
+                  }
 
-        @Override
-        public boolean willStore() {
-          return true;
-        }
+                  @Override
+                  public boolean willStore() {
+                    return true;
+                  }
 
-        @Override
-        public void store(SpawnResult result) throws ExecException, InterruptedException {
-          boolean uploadResults = Status.SUCCESS.equals(result.status()) && result.exitCode() == 0;
-          if (!uploadResults) {
-            return;
-          }
+                  @Override
+                  public void store(SpawnResult result) throws ExecException, InterruptedException {
+                    boolean uploadResults =
+                        Status.SUCCESS.equals(result.status()) && result.exitCode() == 0;
+                    if (!uploadResults) {
+                      return;
+                    }
 
-          if (options.experimentalGuardAgainstConcurrentChanges) {
-            try (SilentCloseable c = prof.profile("RemoteCache.checkForConcurrentModifications")) {
-              checkForConcurrentModifications();
-            } catch (IOException e) {
-              report(Event.warn(e.getMessage()));
-              return;
-            }
-          }
+                    if (options.experimentalGuardAgainstConcurrentChanges) {
+                      try (SilentCloseable c =
+                          prof.profile("RemoteCache.checkForConcurrentModifications")) {
+                        checkForConcurrentModifications();
+                      } catch (IOException e) {
+                        report(Event.warn(e.getMessage()));
+                        return;
+                      }
+                    }
 
-          Context previous = withMetadata.attach();
-          Collection<Path> files =
-              RemoteSpawnRunner.resolveActionInputs(execRoot, spawn.getOutputFiles());
-          try (SilentCloseable c = prof.profile(ProfilerTask.UPLOAD_TIME, "upload outputs")) {
-            remoteCache.upload(
-                actionKey, action, command, execRoot, files, context.getFileOutErr());
-          } catch (IOException e) {
-            String errorMessage;
-            if (!verboseFailures) {
-              errorMessage = Utils.grpcAwareErrorMessage(e);
-            } else {
-              // On --verbose_failures print the whole stack trace
-              errorMessage = Throwables.getStackTraceAsString(e);
-            }
-            if (isNullOrEmpty(errorMessage)) {
-              errorMessage = e.getClass().getSimpleName();
-            }
-            errorMessage = "Writing to Remote Cache:\n" + errorMessage;
-            report(Event.warn(errorMessage));
-          } finally {
-            withMetadata.detach(previous);
-          }
-        }
+                    Context previous = withMetadata.attach();
+                    Collection<Path> files =
+                        RemoteSpawnRunner.resolveActionInputs(execRoot, spawn.getOutputFiles());
+                    try (SilentCloseable c =
+                        prof.profile(ProfilerTask.UPLOAD_TIME, "upload outputs")) {
+                      remoteCache.upload(
+                          actionKey, action, command, execRoot, files, context.getFileOutErr());
+                    } catch (IOException e) {
+                      String errorMessage;
+                      if (!verboseFailures) {
+                        errorMessage = Utils.grpcAwareErrorMessage(e);
+                      } else {
+                        // On --verbose_failures print the whole stack trace
+                        errorMessage = Throwables.getStackTraceAsString(e);
+                      }
+                      if (isNullOrEmpty(errorMessage)) {
+                        errorMessage = e.getClass().getSimpleName();
+                      }
+                      errorMessage = "Writing to Remote Cache:\n" + errorMessage;
+                      report(Event.warn(errorMessage));
+                    } finally {
+                      withMetadata.detach(previous);
+                    }
+                  }
 
-        @Override
-        public void close() {}
+                  @Override
+                  public void close() {}
 
-        private void checkForConcurrentModifications() throws IOException {
-          for (ActionInput input : inputMap.values()) {
-            if (input instanceof VirtualActionInput) {
-              continue;
-            }
-            FileArtifactValue metadata = context.getMetadataProvider().getMetadata(input);
-            Path path = execRoot.getRelative(input.getExecPath());
-            if (metadata.wasModifiedSinceDigest(path)) {
-              throw new IOException(path + " was modified during execution");
-            }
-          }
-        }
-      };
-    } else {
-      return SpawnCache.NO_RESULT_NO_STORE;
+                  private void checkForConcurrentModifications() throws IOException {
+                    for (ActionInput input : inputMap.values()) {
+                      if (input instanceof VirtualActionInput) {
+                        continue;
+                      }
+                      FileArtifactValue metadata = context.getMetadataProvider().getMetadata(input);
+                      Path path = execRoot.getRelative(input.getExecPath());
+                      if (metadata.wasModifiedSinceDigest(path)) {
+                        throw new IOException(path + " was modified during execution");
+                      }
+                    }
+                  }
+                };
+              } else {
+                return SpawnCache.NO_RESULT_NO_STORE;
+              }
+            }));
+  }
+
+  @Override
+  public CacheHandle lookup(Spawn spawn, SpawnExecutionContext context)
+      throws InterruptedException, IOException, ExecException {
+    try {
+      return lookupRx(spawn, context).blockingGet();
+    } catch (Throwable t) {
+      Throwables.throwIfInstanceOf(t.getCause(), InterruptedException.class);
+      Throwables.throwIfInstanceOf(t.getCause(), IOException.class);
+      Throwables.throwIfInstanceOf(t.getCause(), ExecException.class);
+      throw t;
     }
   }
 

@@ -79,7 +79,12 @@ import io.reactivex.rxjava3.core.Single;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import javax.annotation.Nullable;
 
@@ -88,7 +93,9 @@ import javax.annotation.Nullable;
 public class RemoteCache implements AutoCloseable {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
-  /** See {@link SpawnExecutionContext#lockOutputFiles()}. */
+  /**
+   * See {@link SpawnExecutionContext#lockOutputFiles()}.
+   */
   @FunctionalInterface
   interface OutputFilesLocker {
     void lock() throws InterruptedException;
@@ -108,10 +115,14 @@ public class RemoteCache implements AutoCloseable {
     this.digestUtil = digestUtil;
   }
 
+  public Maybe<ActionResult> downloadActionResultRx(ActionKey actionKey, boolean inlineOutErr)  {
+    return cacheProtocol.downloadActionResult(actionKey, inlineOutErr);
+  }
+
   public ActionResult downloadActionResult(ActionKey actionKey, boolean inlineOutErr)
       throws IOException, InterruptedException {
     try {
-      return cacheProtocol.downloadActionResult(actionKey, inlineOutErr).blockingGet();
+      return downloadActionResultRx(actionKey, inlineOutErr).blockingGet();
     } catch (RuntimeException e) {
       Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
       Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
@@ -403,6 +414,64 @@ public class RemoteCache implements AutoCloseable {
     }
   }
 
+  public Completable downloadRx(
+      ActionResult result,
+      Path execRoot,
+      FileOutErr origOutErr,
+      OutputFilesLocker outputFilesLocker) {
+    FileOutErr tmpOutErr;
+    if (origOutErr != null) {
+      tmpOutErr = origOutErr.childOutErr();
+    } else {
+      tmpOutErr = null;
+    }
+
+    return parseActionResultMetadata(result, execRoot)
+        .flatMapCompletable(
+            metadata -> {
+              List<FileMetadata> files = new ArrayList<>(metadata.files());
+              for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
+                files.addAll(entry.getValue().files());
+              }
+
+              return Completable.fromSingle(
+                  downloadFilesAndOutErr(files, result, tmpOutErr)
+                      .doOnSuccess(
+                          bulkTransferResult -> {
+                            if (bulkTransferResult.getError() != null) {
+                              throw bulkTransferResult.getError();
+                            }
+
+                            if (tmpOutErr != null) {
+                              FileOutErr.dump(tmpOutErr, origOutErr);
+                              tmpOutErr.clearOut();
+                              tmpOutErr.clearErr();
+                            }
+
+                            // Ensure that we are the only ones writing to the output files
+                            // when using the dynamic spawn
+                            // strategy.
+                            outputFilesLocker.lock();
+
+                            moveOutputsToFinalLocation(files);
+
+                            List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
+                            for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
+                              entry.getKey().createDirectoryAndParents();
+                              symlinksInDirectories.addAll(entry.getValue().symlinks());
+                            }
+
+                            Iterable<SymlinkMetadata> symlinks =
+                                Iterables.concat(metadata.symlinks(), symlinksInDirectories);
+
+                            // Create the symbolic links after all downloads are finished,
+                            // because dangling symlinks might not be supported on all platforms
+                            createSymlinks(symlinks);
+                          })
+                      .doOnError(e -> deleteDownloadedFiles(e, result, execRoot, tmpOutErr)));
+            });
+  }
+
   /**
    * Download the output files and directory trees of a remotely executed action to the local
    * machine, as well stdin / stdout to the given files.
@@ -420,62 +489,9 @@ public class RemoteCache implements AutoCloseable {
       FileOutErr origOutErr,
       OutputFilesLocker outputFilesLocker)
       throws ExecException, IOException, InterruptedException {
-    FileOutErr tmpOutErr;
-    if (origOutErr != null) {
-      tmpOutErr = origOutErr.childOutErr();
-    } else {
-      tmpOutErr = null;
-    }
-
-    Completable download =
-        parseActionResultMetadata(result, execRoot)
-            .flatMapCompletable(
-                metadata -> {
-                  List<FileMetadata> files = new ArrayList<>(metadata.files());
-                  for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
-                    files.addAll(entry.getValue().files());
-                  }
-
-                  return Completable.fromSingle(
-                      downloadFilesAndOutErr(files, result, tmpOutErr)
-                          .doOnSuccess(
-                              bulkTransferResult -> {
-                                if (bulkTransferResult.getError() != null) {
-                                  throw bulkTransferResult.getError();
-                                }
-
-                                if (tmpOutErr != null) {
-                                  FileOutErr.dump(tmpOutErr, origOutErr);
-                                  tmpOutErr.clearOut();
-                                  tmpOutErr.clearErr();
-                                }
-
-                                // Ensure that we are the only ones writing to the output files
-                                // when using the dynamic spawn
-                                // strategy.
-                                outputFilesLocker.lock();
-
-                                moveOutputsToFinalLocation(files);
-
-                                List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
-                                for (Entry<Path, DirectoryMetadata> entry :
-                                    metadata.directories()) {
-                                  entry.getKey().createDirectoryAndParents();
-                                  symlinksInDirectories.addAll(entry.getValue().symlinks());
-                                }
-
-                                Iterable<SymlinkMetadata> symlinks =
-                                    Iterables.concat(metadata.symlinks(), symlinksInDirectories);
-
-                                // Create the symbolic links after all downloads are finished,
-                                // because dangling symlinks might not be supported on all platforms
-                                createSymlinks(symlinks);
-                              })
-                          .doOnError(e -> deleteDownloadedFiles(e, result, execRoot, tmpOutErr)));
-                });
 
     try {
-      download.blockingAwait();
+      downloadRx(result, execRoot, origOutErr, outputFilesLocker).blockingAwait();
     } catch (Throwable e) {
       Throwables.throwIfInstanceOf(e.getCause(), ExecException.class);
       Throwables.throwIfInstanceOf(e.getCause(), IOException.class);
