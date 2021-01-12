@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.actions.SpawnContinuation;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnStrategy;
 import com.google.devtools.build.lib.actions.TestExecException;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration;
 import com.google.devtools.build.lib.analysis.test.TestResult;
@@ -367,7 +368,7 @@ public class StandaloneTestStrategy extends TestStrategy {
         ImmutableList.of(
             action.getTestXmlGeneratorScript().getExecPath().getCallablePathString(),
             action.getTestLog().getExecPathString(),
-            action.getXmlOutputPath().getPathString(),
+            action.getTestXml().getExecPathString(),
             Long.toString(result.getWallTime().orElse(Duration.ZERO).getSeconds()),
             Integer.toString(result.exitCode()));
 
@@ -390,7 +391,7 @@ public class StandaloneTestStrategy extends TestStrategy {
         /*inputs=*/ NestedSetBuilder.create(
             Order.STABLE_ORDER, action.getTestXmlGeneratorScript(), action.getTestLog()),
         /*tools=*/ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
-        /*outputs=*/ ImmutableSet.of(ActionInputHelper.fromPath(action.getXmlOutputPath())),
+        /*outputs=*/ ImmutableSet.of(action.getTestXml()),
         SpawnAction.DEFAULT_RESOURCE_SET);
   }
 
@@ -594,14 +595,29 @@ public class StandaloneTestStrategy extends TestStrategy {
         builder.setHasCoverage(true);
       }
 
+      MetadataHandler metadataHandler = actionExecutionContext.getMetadataHandler();
+
+      Path xmlOutputPath = resolvedPaths.getXmlOutputPath();
+      boolean testXmlExists = xmlOutputPath.exists();
+      if (!testXmlExists && metadataHandler != null) {
+        try {
+          // Check whether test.xml exists. If not, an IOException will be thrown.
+          metadataHandler.getMetadata(testAction.getTestXml());
+          testXmlExists = true;
+        } catch (IOException ignored) {
+          // If test.xml doesn't exist, A call to getMetadata above will insert a MISSING_FILE_MARKER value
+          // into the store. We need to reset the outputs.
+          metadataHandler.resetOutputs(ImmutableList.of(testAction.getTestXml()));
+        }
+      }
+
       // If the test did not create a test.xml, and --experimental_split_xml_generation is enabled,
       // then we run a separate action to create a test.xml from test.log. We do this as a spawn
       // rather than doing it locally in-process, as the test.log file may only exist remotely (when
       // remote execution is enabled), and we do not want to have to download it.
-      Path xmlOutputPath = resolvedPaths.getXmlOutputPath();
       if (executionOptions.splitXmlGeneration
           && fileOutErr.getOutputPath().exists()
-          && !xmlOutputPath.exists()) {
+          && !testXmlExists) {
         Spawn xmlGeneratingSpawn = createXmlGeneratingSpawn(testAction, primaryResult);
         SpawnStrategy strategy = actionExecutionContext.getContext(SpawnStrategy.class);
         // We treat all failures to generate the test.xml here as catastrophic, and won't rerun
@@ -617,6 +633,10 @@ public class StandaloneTestStrategy extends TestStrategy {
           closeSuppressed(e, xmlSpawnOutErr);
           throw e;
         }
+      }
+
+      if (!testXmlExists && metadataHandler != null) {
+        metadataHandler.markOmitted(testAction.getTestXml());
       }
 
       TestCase details = parseTestResult(xmlOutputPath);
