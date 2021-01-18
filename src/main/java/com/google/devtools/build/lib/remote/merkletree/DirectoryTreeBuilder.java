@@ -34,6 +34,8 @@ import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
+import static com.google.devtools.build.lib.actions.FileArtifactValue.*;
+
 /** Builder for directory trees. */
 class DirectoryTreeBuilder {
 
@@ -101,7 +103,7 @@ class DirectoryTreeBuilder {
             throw new IOException(String.format("Input '%s' is not a file.", input));
           }
           Digest d = digestUtil.compute(input);
-          currDir.addChild(new FileNode(path.getBaseName(), input, d));
+          currDir.addChild(new FileNode(path.getBaseName(), input, d, input.isExecutable()));
           return 1;
         });
   }
@@ -139,9 +141,16 @@ class DirectoryTreeBuilder {
           switch (metadata.getType()) {
             case REGULAR_FILE:
               Digest d = DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize());
-              currDir.addChild(
-                  new FileNode(
-                      path.getBaseName(), ActionInputHelper.toInputPath(input, execRoot), d));
+              Path inputPath = ActionInputHelper.toInputPath(input, execRoot);
+
+              boolean isExecutable;
+              if (metadata instanceof RemoteFileArtifactValue) {
+                isExecutable = ((RemoteFileArtifactValue) metadata).isExecutable();
+              } else {
+                isExecutable = inputPath.isExecutable();
+              }
+
+              currDir.addChild(new FileNode(path.getBaseName(), inputPath, d, isExecutable));
               return 1;
 
             case DIRECTORY:

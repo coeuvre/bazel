@@ -80,8 +80,8 @@ public class RemoteActionInputFetcherTest {
     // arrange
     Map<ActionInput, FileArtifactValue> metadata = new HashMap<>();
     Map<Digest, ByteString> cacheEntries = new HashMap<>();
-    Artifact a1 = createRemoteArtifact("file1", "hello world", metadata, cacheEntries);
-    Artifact a2 = createRemoteArtifact("file2", "fizz buzz", metadata, cacheEntries);
+    Artifact a1 = createRemoteArtifact("file1", "hello world", metadata, cacheEntries, false);
+    Artifact a2 = createRemoteArtifact("file2", "fizz buzz", metadata, cacheEntries, false);
     MetadataProvider metadataProvider = new StaticMetadataProvider(metadata);
     RemoteCache remoteCache = newCache(options, digestUtil, cacheEntries);
     RemoteActionInputFetcher actionInputFetcher =
@@ -129,7 +129,7 @@ public class RemoteActionInputFetcherTest {
     // arrange
     Map<ActionInput, FileArtifactValue> metadata = new HashMap<>();
     Artifact a =
-        createRemoteArtifact("file1", "hello world", metadata, /* cacheEntries= */ new HashMap<>());
+        createRemoteArtifact("file1", "hello world", metadata, /* cacheEntries= */ new HashMap<>(), false);
     MetadataProvider metadataProvider = new StaticMetadataProvider(metadata);
     RemoteCache remoteCache = newCache(options, digestUtil, new HashMap<>());
     RemoteActionInputFetcher actionInputFetcher =
@@ -172,7 +172,7 @@ public class RemoteActionInputFetcherTest {
     // arrange
     Map<ActionInput, FileArtifactValue> metadata = new HashMap<>();
     Map<Digest, ByteString> cacheEntries = new HashMap<>();
-    Artifact a1 = createRemoteArtifact("file1", "hello world", metadata, cacheEntries);
+    Artifact a1 = createRemoteArtifact("file1", "hello world", metadata, cacheEntries, false);
     RemoteCache remoteCache = newCache(options, digestUtil, cacheEntries);
     RemoteActionInputFetcher actionInputFetcher =
         new RemoteActionInputFetcher(remoteCache, execRoot, Context.current());
@@ -192,13 +192,14 @@ public class RemoteActionInputFetcherTest {
       String pathFragment,
       String contents,
       Map<ActionInput, FileArtifactValue> metadata,
-      Map<Digest, ByteString> cacheEntries) {
+      Map<Digest, ByteString> cacheEntries,
+      boolean isExecutable) {
     Path p = artifactRoot.getRoot().getRelative(pathFragment);
     Artifact a = ActionsTestUtil.createArtifact(artifactRoot, p);
     byte[] b = contents.getBytes(StandardCharsets.UTF_8);
     HashCode h = HASH_FUNCTION.getHashFunction().hashBytes(b);
     FileArtifactValue f =
-        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1);
+        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1, isExecutable);
     metadata.put(a, f);
     cacheEntries.put(DigestUtil.buildDigest(h.asBytes(), b.length), ByteString.copyFrom(b));
     return a;

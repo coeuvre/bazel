@@ -542,11 +542,13 @@ public abstract class FileArtifactValue implements SkyValue, HasDigest {
     private final byte[] digest;
     private final long size;
     private final int locationIndex;
+    private final boolean isExecutable;
 
-    public RemoteFileArtifactValue(byte[] digest, long size, int locationIndex) {
+    public RemoteFileArtifactValue(byte[] digest, long size, int locationIndex, boolean isExecutable) {
       this.digest = digest;
       this.size = size;
       this.locationIndex = locationIndex;
+      this.isExecutable = isExecutable;
     }
 
     @Override
@@ -558,7 +560,8 @@ public abstract class FileArtifactValue implements SkyValue, HasDigest {
       RemoteFileArtifactValue that = (RemoteFileArtifactValue) o;
       return Arrays.equals(digest, that.digest)
           && size == that.size
-          && locationIndex == that.locationIndex;
+          && locationIndex == that.locationIndex
+          && isExecutable == that.isExecutable;
     }
 
     @Override
@@ -597,6 +600,10 @@ public abstract class FileArtifactValue implements SkyValue, HasDigest {
       return locationIndex;
     }
 
+    public boolean isExecutable() {
+      return isExecutable;
+    }
+
     @Override
     public boolean wasModifiedSinceDigest(Path path) {
       return false;
@@ -613,6 +620,7 @@ public abstract class FileArtifactValue implements SkyValue, HasDigest {
           .add("digest", bytesToString(digest))
           .add("size", size)
           .add("locationIndex", locationIndex)
+          .add("isExecutable", isExecutable)
           .toString();
     }
   }

@@ -612,7 +612,8 @@ public class RemoteCache implements AutoCloseable {
             new RemoteFileArtifactValue(
                 DigestUtil.toBinaryDigest(file.digest()),
                 file.digest().getSizeBytes(),
-                /* locationIndex= */ 1);
+                /* locationIndex= */ 1,
+                file.isExecutable());
         childMetadata.put(p, r);
       }
       metadataInjector.injectRemoteDirectory(
@@ -628,7 +629,8 @@ public class RemoteCache implements AutoCloseable {
           output,
           DigestUtil.toBinaryDigest(outputMetadata.digest()),
           outputMetadata.digest().getSizeBytes(),
-          /* locationIndex= */ 1);
+          /* locationIndex= */ 1,
+          outputMetadata.isExecutable());
     }
   }
 

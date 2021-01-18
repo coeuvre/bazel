@@ -67,7 +67,7 @@ public class RemoteActionFileSystemTest {
   public void testGetInputStream() throws Exception {
     // arrange
     ActionInputMap inputs = new ActionInputMap(2);
-    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs);
+    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs, false);
     Artifact localArtifact = createLocalArtifact("local-file", "local contents", inputs);
     FileSystem actionFs = newRemoteActionFileSystem(inputs);
     doAnswer(
@@ -100,7 +100,7 @@ public class RemoteActionFileSystemTest {
   public void testCreateSymbolicLink() throws InterruptedException, IOException {
     // arrange
     ActionInputMap inputs = new ActionInputMap(1);
-    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs);
+    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs, false);
     Path symlink = outputRoot.getRoot().getRelative("symlink");
     FileSystem actionFs = newRemoteActionFileSystem(inputs);
     doAnswer(
@@ -130,7 +130,7 @@ public class RemoteActionFileSystemTest {
   public void testDeleteRemoteFile() throws Exception {
     // arrange
     ActionInputMap inputs = new ActionInputMap(1);
-    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs);
+    Artifact remoteArtifact = createRemoteArtifact("remote-file", "remote contents", inputs, false);
     FileSystem actionFs = newRemoteActionFileSystem(inputs);
 
     // act
@@ -166,13 +166,13 @@ public class RemoteActionFileSystemTest {
 
   /** Returns a remote artifact and puts its metadata into the action input map. */
   private Artifact createRemoteArtifact(
-      String pathFragment, String contents, ActionInputMap inputs) {
+      String pathFragment, String contents, ActionInputMap inputs, boolean isExecutable) {
     Path p = outputRoot.getRoot().asPath().getRelative(pathFragment);
     Artifact a = ActionsTestUtil.createArtifact(outputRoot, p);
     byte[] b = contents.getBytes(StandardCharsets.UTF_8);
     HashCode h = HASH_FUNCTION.getHashFunction().hashBytes(b);
     FileArtifactValue f =
-        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1);
+        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1, isExecutable);
     inputs.putWithNoDepOwner(a, f);
     return a;
   }

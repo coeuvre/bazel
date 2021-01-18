@@ -32,7 +32,7 @@ public interface MetadataInjector {
    * @param size the size of the file in bytes.
    * @param locationIndex is only used in Blaze.
    */
-  void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex);
+  void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex, boolean isExecutable);
 
   /**
    * Inject the metadata of a tree artifact whose contents are stored remotely.

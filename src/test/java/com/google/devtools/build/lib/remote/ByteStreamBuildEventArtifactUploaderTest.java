@@ -282,7 +282,7 @@ public class ByteStreamBuildEventArtifactUploaderTest {
     ByteStreamBuildEventArtifactUploader artifactUploader = newArtifactUploader(uploader);
 
     ActionInputMap outputs = new ActionInputMap(2);
-    Artifact artifact = createRemoteArtifact("file1.txt", "foo", outputs);
+    Artifact artifact = createRemoteArtifact("file1.txt", "foo", outputs, false);
 
     RemoteActionFileSystem remoteFs =
         new RemoteActionFileSystem(
@@ -354,13 +354,13 @@ public class ByteStreamBuildEventArtifactUploaderTest {
 
   /** Returns a remote artifact and puts its metadata into the action input map. */
   private Artifact createRemoteArtifact(
-      String pathFragment, String contents, ActionInputMap inputs) {
+      String pathFragment, String contents, ActionInputMap inputs, boolean isExecutable) {
     Path p = outputRoot.getRoot().asPath().getRelative(pathFragment);
     Artifact a = ActionsTestUtil.createArtifact(outputRoot, p);
     byte[] b = contents.getBytes(StandardCharsets.UTF_8);
     HashCode h = HashCode.fromString(DIGEST_UTIL.compute(b).getHash());
     FileArtifactValue f =
-        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1);
+        new RemoteFileArtifactValue(h.asBytes(), b.length, /* locationIndex= */ 1, isExecutable);
     inputs.putWithNoDepOwner(a, f);
     return a;
   }

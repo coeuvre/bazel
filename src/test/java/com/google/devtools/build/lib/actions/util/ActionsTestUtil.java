@@ -959,7 +959,7 @@ public final class ActionsTestUtil {
     }
 
     @Override
-    public void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex) {
+    public void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex, boolean isExecutable) {
       throw new UnsupportedOperationException();
     }
 
