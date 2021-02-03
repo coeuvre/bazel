@@ -74,6 +74,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/remote/common",
         "//src/main/java/com/google/devtools/build/lib/remote/disk",
         "//src/main/java/com/google/devtools/build/lib/remote/downloader",
+        "//src/main/java/com/google/devtools/build/lib/remote/grpc",
         "//src/main/java/com/google/devtools/build/lib/remote/http",
         "//src/main/java/com/google/devtools/build/lib/remote/logging",
         "//src/main/java/com/google/devtools/build/lib/remote/merkletree",
