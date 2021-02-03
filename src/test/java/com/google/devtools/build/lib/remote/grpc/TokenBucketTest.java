@@ -2,12 +2,14 @@ package com.google.devtools.build.lib.remote.grpc;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 import java.io.IOException;
+import java.util.Collections;
 
 /** Tests for {@link TokenBucket}. */
 @RunWith(JUnit4.class)
@@ -18,6 +20,17 @@ public class TokenBucketTest {
     TokenBucket<Integer> bucket = new TokenBucket<>();
     assertThat(bucket.size()).isEqualTo(0);
     bucket.addToken(0);
+    assertThat(bucket.size()).isEqualTo(1);
+
+    TestObserver<Integer> observer = bucket.acquireToken().test();
+
+    observer.assertValue(0).assertComplete();
+    assertThat(bucket.size()).isEqualTo(0);
+  }
+
+  @Test
+  public void acquireToken_releaseInitialTokens() {
+    TokenBucket<Integer> bucket = new TokenBucket<>(Collections.singletonList(0));
     assertThat(bucket.size()).isEqualTo(1);
 
     TestObserver<Integer> observer = bucket.acquireToken().test();
@@ -86,8 +99,50 @@ public class TokenBucketTest {
   }
 
   @Test
+  public void acquireToken_reSubscription_waitAvailableToken() {
+    TokenBucket<Integer> bucket = new TokenBucket<>();
+    bucket.addToken(0);
+    Single<Integer> tokenSingle = bucket.acquireToken();
+
+    TestObserver<Integer> observer1 = tokenSingle.test();
+    TestObserver<Integer> observer2 = tokenSingle.test();
+
+    observer1.assertValue(0).assertComplete();
+    observer2.assertEmpty();
+  }
+
+  @Test
+  public void acquireToken_reSubscription_acquiredAddedToken() {
+    TokenBucket<Integer> bucket = new TokenBucket<>();
+    bucket.addToken(0);
+    Single<Integer> tokenSingle = bucket.acquireToken();
+    TestObserver<Integer> observer1 = tokenSingle.test();
+    TestObserver<Integer> observer2 = tokenSingle.test();
+
+    bucket.addToken(1);
+
+    observer1.assertValue(0).assertComplete();
+    observer2.assertValue(1).assertComplete();
+  }
+
+  @Test
+  public void acquireToken_reSubscription_acquireNextToken() {
+    TokenBucket<Integer> bucket = new TokenBucket<>();
+    bucket.addToken(0);
+    bucket.addToken(1);
+    Single<Integer> tokenSingle = bucket.acquireToken();
+
+    TestObserver<Integer> observer1 = tokenSingle.test();
+    TestObserver<Integer> observer2 = tokenSingle.test();
+
+    observer1.assertValue(0).assertComplete();
+    observer2.assertValue(1).assertComplete();
+  }
+
+  @Test
   public void close_errorAfterClose() throws IOException {
     TokenBucket<Integer> bucket = new TokenBucket<>();
+    bucket.addToken(0);
     bucket.close();
 
     TestObserver<Integer> observer = bucket.acquireToken().test();
@@ -105,3 +160,4 @@ public class TokenBucketTest {
     observer.assertError(e -> e.getMessage().contains("closed"));
   }
 }
+

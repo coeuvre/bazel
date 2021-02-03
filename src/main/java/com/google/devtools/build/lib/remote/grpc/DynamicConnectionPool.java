@@ -6,27 +6,27 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.IOException;
 import java.util.ArrayList;
 
-public class DynamicConnectionFactory implements PooledConnectionFactory {
+public class DynamicConnectionPool implements ConnectionPool {
   private final ConnectionFactory connectionFactory;
-  private final int maxConnectionsPerChannel;
+  private final int maxConcurrencyPerConnection;
 
   @GuardedBy("this")
-  private final ArrayList<RateLimitedConnectionFactory> factories;
+  private final ArrayList<SharedConnectionFactory> factories;
 
   @GuardedBy("this")
   private int indexTicker = 0;
 
-  public DynamicConnectionFactory(
-      ConnectionFactory connectionFactory, int maxConnectionsPerChannel) {
+  public DynamicConnectionPool(
+      ConnectionFactory connectionFactory, int maxConcurrencyPerConnection) {
     this.connectionFactory = connectionFactory;
-    this.maxConnectionsPerChannel = maxConnectionsPerChannel;
+    this.maxConcurrencyPerConnection = maxConcurrencyPerConnection;
     this.factories = new ArrayList<>();
   }
 
   public int numAvailableConnections() {
     int result = 0;
     synchronized (this) {
-      for (RateLimitedConnectionFactory factory : factories) {
+      for (SharedConnectionFactory factory : factories) {
         result += factory.numAvailableConnections();
       }
     }
@@ -36,26 +36,26 @@ public class DynamicConnectionFactory implements PooledConnectionFactory {
   @Override
   public void close() throws IOException {
     synchronized (this) {
-      for (RateLimitedConnectionFactory factory : factories) {
+      for (SharedConnectionFactory factory : factories) {
         factory.close();
       }
       factories.clear();
     }
   }
 
-  private synchronized RateLimitedConnectionFactory nextAvailableFactory() {
+  private synchronized SharedConnectionFactory nextAvailableFactory() {
     for (int times = 0; times < factories.size(); ++times) {
       int index = Math.abs(indexTicker % factories.size());
       indexTicker += 1;
 
-      RateLimitedConnectionFactory factory = factories.get(index);
+      SharedConnectionFactory factory = factories.get(index);
       if (factory.numAvailableConnections() > 0) {
         return factory;
       }
     }
 
-    RateLimitedConnectionFactory factory =
-        new RateLimitedConnectionFactory(connectionFactory, maxConnectionsPerChannel);
+    SharedConnectionFactory factory =
+        new SharedConnectionFactory(connectionFactory, maxConcurrencyPerConnection);
     factories.add(factory);
     return factory;
   }
@@ -64,7 +64,7 @@ public class DynamicConnectionFactory implements PooledConnectionFactory {
   public Single<? extends Connection> create() {
     return Single.defer(
         () -> {
-          RateLimitedConnectionFactory factory = nextAvailableFactory();
+          SharedConnectionFactory factory = nextAvailableFactory();
           return factory.create();
         });
   }

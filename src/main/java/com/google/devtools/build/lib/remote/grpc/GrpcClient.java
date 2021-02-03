@@ -9,13 +9,13 @@ import java.io.Closeable;
 import java.io.IOException;
 
 public class GrpcClient implements Closeable {
-  private final PooledConnectionFactory factory;
+  private final ConnectionPool factory;
 
-  public static GrpcClient create(PooledConnectionFactory factory) {
+  public static GrpcClient create(ConnectionPool factory) {
     return new GrpcClient(factory);
   }
 
-  GrpcClient(PooledConnectionFactory factory) {
+  GrpcClient(ConnectionPool factory) {
     this.factory = factory;
   }
 

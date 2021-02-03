@@ -5,8 +5,6 @@ import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.MethodDescriptor;
 import io.reactivex.rxjava3.core.Single;
-import io.reactivex.rxjava3.subjects.AsyncSubject;
-import io.reactivex.rxjava3.subjects.Subject;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -18,7 +16,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 @ThreadSafe
-public class RateLimitedConnectionFactory implements PooledConnectionFactory {
+public class SharedConnectionFactory implements ConnectionPool {
   private final TokenBucket<Integer> tokenBucket;
   private final ConnectionFactory factory;
 
@@ -27,11 +25,11 @@ public class RateLimitedConnectionFactory implements PooledConnectionFactory {
   @GuardedBy("connectionLock")
   private @Nullable Connection connection = null;
 
-  public RateLimitedConnectionFactory(ConnectionFactory factory, int maxConnections) {
+  public SharedConnectionFactory(ConnectionFactory factory, int maxConcurrency) {
     this.factory = factory;
 
-    List<Integer> initialTokens = new ArrayList<>(maxConnections);
-    for (int i = 0; i < maxConnections; ++i) {
+    List<Integer> initialTokens = new ArrayList<>(maxConcurrency);
+    for (int i = 0; i < maxConcurrency; ++i) {
       initialTokens.add(i);
     }
     this.tokenBucket = new TokenBucket<>(initialTokens);
@@ -39,6 +37,8 @@ public class RateLimitedConnectionFactory implements PooledConnectionFactory {
 
   @Override
   public void close() throws IOException {
+    tokenBucket.close();
+
     connectionLock.lock();
     try {
       if (connection != null) {
@@ -69,7 +69,7 @@ public class RateLimitedConnectionFactory implements PooledConnectionFactory {
   }
 
   @Override
-  public Single<? extends Connection> create() {
+  public Single<SharedConnection> create() {
     return tokenBucket
         .acquireToken()
         .flatMap(
@@ -100,6 +100,10 @@ public class RateLimitedConnectionFactory implements PooledConnectionFactory {
     @Override
     public void close() throws IOException {
       onClose.close();
+    }
+
+    public Connection getUnderlyingConnection() {
+      return connection;
     }
   }
 }
