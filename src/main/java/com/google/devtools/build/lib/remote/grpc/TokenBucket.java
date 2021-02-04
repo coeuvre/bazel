@@ -7,45 +7,44 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.subjects.BehaviorSubject;
 
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.ArrayDeque;
 import java.util.Collection;
-import java.util.Deque;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
+/** A container for tokens which is used for rate limiting. */
 @ThreadSafe
 public class TokenBucket<T> implements Closeable {
-  @GuardedBy("this")
-  private final Deque<T> tokens;
+  private final ConcurrentLinkedDeque<T> tokens;
 
   private final BehaviorSubject<T> tokenBehaviorSubject = BehaviorSubject.create();
 
   public TokenBucket() {
-    tokens = new ArrayDeque<>();
+    tokens = new ConcurrentLinkedDeque<>();
   }
 
   public TokenBucket(Collection<T> initialTokens) {
-    tokens = new ArrayDeque<>(initialTokens);
+    tokens = new ConcurrentLinkedDeque<>(initialTokens);
 
     if (!tokens.isEmpty()) {
       tokenBehaviorSubject.onNext(tokens.getFirst());
     }
   }
 
+  /** Add a token to the bucket. */
   public void addToken(T token) {
-    synchronized (this) {
-      tokens.addLast(token);
-    }
-
+    tokens.addLast(token);
     tokenBehaviorSubject.onNext(token);
   }
 
-  public synchronized int size() {
+  /** Returns current number of tokens in the bucket. */
+  public int size() {
     return tokens.size();
   }
 
+  /**
+   * Returns a cold {@link Single} which will start the token acquisition process upon subscription.
+   */
   public Single<T> acquireToken() {
     return Single.create(
         downstream ->
@@ -61,33 +60,37 @@ public class TokenBucket<T> implements Closeable {
 
                   @Override
                   public void onNext(@NonNull T ignored) {
-                    T token = takeFirst();
-                    if (token != null && !downstream.isDisposed()) {
-                      downstream.onSuccess(token);
+                    if (!downstream.isDisposed()) {
+                      T token = tokens.pollFirst();
+                      if (token != null) {
+                        downstream.onSuccess(token);
+                      }
                     }
                   }
 
                   @Override
                   public void onError(@NonNull Throwable e) {
-                    downstream.onError(e);
+                    downstream.onError(new IllegalStateException(e));
                   }
 
                   @Override
                   public void onComplete() {
-                    downstream.onError(new IllegalStateException("closed"));
+                    if (!downstream.isDisposed()) {
+                      downstream.onError(new IllegalStateException("closed"));
+                    }
                   }
                 }));
   }
 
-  private synchronized @Nullable T takeFirst() {
-    if (!tokens.isEmpty()) {
-      return tokens.removeFirst();
-    }
-    return null;
-  }
-
+  /**
+   * Closes the bucket and release all the tokens.
+   *
+   * <p>Subscriptions after closed to the Single returned by {@link TokenBucket#acquireToken()} will
+   * emit error.
+   */
   @Override
   public void close() throws IOException {
+    tokens.clear();
     tokenBehaviorSubject.onComplete();
   }
 }

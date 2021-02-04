@@ -140,6 +140,18 @@ public class TokenBucketTest {
   }
 
   @Test
+  public void acquireToken_dispose_tokenRemains() {
+    TokenBucket<Integer> bucket = new TokenBucket<>();
+    TestObserver<Integer> observer = bucket.acquireToken().test();
+    observer.assertEmpty();
+
+    observer.dispose();
+    bucket.addToken(0);
+
+    assertThat(bucket.size()).isEqualTo(1);
+  }
+
+  @Test
   public void close_errorAfterClose() throws IOException {
     TokenBucket<Integer> bucket = new TokenBucket<>();
     bucket.addToken(0);
