@@ -98,6 +98,7 @@ java_library(
         "//third_party:guava",
         "//third_party:jsr305",
         "//third_party:netty",
+        "//third_party:rxjava3",
         "//third_party/grpc:grpc-jar",
         "//third_party/protobuf:protobuf_java",
         "//third_party/protobuf:protobuf_java_util",
@@ -128,9 +129,9 @@ java_library(
     name = "ReferenceCountedChannel",
     srcs = [
         "ReferenceCountedChannel.java",
-        "ReferenceCountedChannelPool.java",
     ],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/remote/grpc",
         "//third_party:guava",
         "//third_party:netty",
         "//third_party/grpc:grpc-jar",

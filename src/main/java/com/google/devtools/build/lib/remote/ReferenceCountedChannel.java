@@ -13,13 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import io.grpc.CallOptions;
-import io.grpc.ClientCall;
-import io.grpc.ManagedChannel;
-import io.grpc.MethodDescriptor;
+import com.google.devtools.build.lib.remote.grpc.ChannelConnectionFactory;
+import com.google.devtools.build.lib.remote.grpc.ChannelConnectionFactory.ChannelConnection;
+import com.google.devtools.build.lib.remote.grpc.Connection;
+import com.google.devtools.build.lib.remote.grpc.DynamicConnectionPool;
+import com.google.devtools.build.lib.remote.grpc.SharedConnectionFactory.SharedConnection;
+import io.grpc.*;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
-import java.util.concurrent.TimeUnit;
+
+import java.io.IOException;
 
 /**
  * A wrapper around a {@link io.grpc.ManagedChannel} exposing a reference count. When instantiated
@@ -28,69 +31,88 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>See {@link ReferenceCounted} for more information about reference counting.
  */
-public class ReferenceCountedChannel extends ManagedChannel implements ReferenceCounted {
-
-  private final ManagedChannel channel;
-  private final AbstractReferenceCounted referenceCounted;
-
-  public ReferenceCountedChannel(ManagedChannel channel) {
-    this(
-        channel,
-        new AbstractReferenceCounted() {
-          @Override
-          protected void deallocate() {
-            channel.shutdown();
+public class ReferenceCountedChannel extends Channel implements ReferenceCounted {
+  private final DynamicConnectionPool dynamicConnectionPool;
+  private final AbstractReferenceCounted referenceCounted =
+      new AbstractReferenceCounted() {
+        @Override
+        protected void deallocate() {
+          try {
+            dynamicConnectionPool.close();
+          } catch (IOException e) {
+            throw new AssertionError(e.getMessage(), e);
           }
+        }
 
-          @Override
-          public ReferenceCounted touch(Object o) {
-            return this;
-          }
-        });
+        @Override
+        public ReferenceCounted touch(Object o) {
+          return this;
+        }
+      };
+
+  protected ReferenceCountedChannel(ChannelConnectionFactory connectionFactory) {
+    this.dynamicConnectionPool =
+        new DynamicConnectionPool(connectionFactory, connectionFactory.maxConcurrency());
   }
 
-  protected ReferenceCountedChannel(
-      ManagedChannel channel, AbstractReferenceCounted referenceCounted) {
-    this.channel = channel;
-    this.referenceCounted = referenceCounted;
-  }
+  static class ConnectionCleanupInterceptor implements ClientInterceptor {
+    private final Connection connection;
 
-  @Override
-  public ManagedChannel shutdown() {
-    throw new UnsupportedOperationException("Don't call shutdown() directly, but use release() "
-        + "instead.");
-  }
+    ConnectionCleanupInterceptor(Connection connection) {
+      this.connection = connection;
+    }
 
-  @Override
-  public boolean isShutdown() {
-    return channel.isShutdown();
-  }
+    @Override
+    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
+      ClientCall<ReqT, RespT> call = next.newCall(method, callOptions);
+      return new ConnectionCleanupCall<>(call, connection);
+    }
 
-  @Override
-  public boolean isTerminated() {
-    return channel.isTerminated();
-  }
+    static class ConnectionCleanupCall<ReqT, RespT>
+        extends ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT> {
+      private final Connection connection;
 
-  @Override
-  public ManagedChannel shutdownNow() {
-    throw new UnsupportedOperationException("Don't call shutdownNow() directly, but use release() "
-        + "instead.");
-  }
+      protected ConnectionCleanupCall(ClientCall<ReqT, RespT> delegate, Connection connection) {
+        super(delegate);
+        this.connection = connection;
+      }
 
-  @Override
-  public boolean awaitTermination(long timeout, TimeUnit timeUnit) throws InterruptedException {
-    return channel.awaitTermination(timeout, timeUnit);
+      @Override
+      public void start(Listener<RespT> responseListener, Metadata headers) {
+        super.start(
+            new ForwardingClientCallListener.SimpleForwardingClientCallListener<RespT>(
+                responseListener) {
+              @Override
+              public void onClose(Status status, Metadata trailers) {
+                super.onClose(status, trailers);
+                try {
+                  connection.close();
+                } catch (IOException e) {
+                  throw new AssertionError(e.getMessage(), e);
+                }
+              }
+            },
+            headers);
+      }
+    }
   }
 
   @Override
   public <RequestT, ResponseT> ClientCall<RequestT, ResponseT> newCall(
       MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions callOptions) {
-    return channel.<RequestT, ResponseT>newCall(methodDescriptor, callOptions);
+    SharedConnection sharedConnection = dynamicConnectionPool.create().blockingGet();
+    ChannelConnection connection = (ChannelConnection) sharedConnection.getUnderlyingConnection();
+    return ClientInterceptors.intercept(
+            connection.getChannel(), new ConnectionCleanupInterceptor(sharedConnection))
+        .newCall(methodDescriptor, callOptions);
   }
 
   @Override
   public String authority() {
-    return channel.authority();
+    SharedConnection sharedConnection = dynamicConnectionPool.create().blockingGet();
+    ChannelConnection connection = (ChannelConnection) sharedConnection.getUnderlyingConnection();
+    return connection.getChannel().authority();
   }
 
   @Override

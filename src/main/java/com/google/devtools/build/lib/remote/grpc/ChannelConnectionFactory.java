@@ -1,36 +1,21 @@
 package com.google.devtools.build.lib.remote.grpc;
 
-import com.google.devtools.build.lib.authandtls.GoogleAuthUtils;
-import io.grpc.*;
+import io.grpc.CallOptions;
+import io.grpc.ClientCall;
+import io.grpc.ManagedChannel;
+import io.grpc.MethodDescriptor;
 import io.reactivex.rxjava3.core.Single;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-public class ChannelConnectionFactory implements ConnectionFactory {
-  private final ConnectionFactoryOptions options;
-
-  public ChannelConnectionFactory(ConnectionFactoryOptions options) {
-    this.options = options;
-  }
-
+public interface ChannelConnectionFactory extends ConnectionFactory {
   @Override
-  public Single<? extends ChannelConnection> create() {
-    List<ClientInterceptor> interceptors = options.interceptors();
-    return Single.fromCallable(
-        () -> {
-          ManagedChannel channel =
-              GoogleAuthUtils.newChannel(
-                  options.target(),
-                  options.proxy(),
-                  options.options(),
-                  interceptors.isEmpty() ? null : interceptors);
-          return new ChannelConnection(channel);
-        });
-  }
+  Single<? extends ChannelConnection> create();
 
-  public static class ChannelConnection implements Connection {
+  int maxConcurrency();
+
+  class ChannelConnection implements Connection {
     private final ManagedChannel channel;
 
     public ChannelConnection(ManagedChannel channel) {
@@ -51,6 +36,10 @@ public class ChannelConnectionFactory implements ConnectionFactory {
       } catch (InterruptedException e) {
         throw new IOException(e.getMessage(), e);
       }
+    }
+
+    public ManagedChannel getChannel() {
+      return channel;
     }
   }
 }
