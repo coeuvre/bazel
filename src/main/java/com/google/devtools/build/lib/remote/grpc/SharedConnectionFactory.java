@@ -1,11 +1,12 @@
 package com.google.devtools.build.lib.remote.grpc;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.MethodDescriptor;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.subjects.AsyncSubject;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -13,6 +14,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 @ThreadSafe
@@ -20,10 +22,11 @@ public class SharedConnectionFactory implements ConnectionPool {
   private final TokenBucket<Integer> tokenBucket;
   private final ConnectionFactory factory;
 
-  private final ReentrantLock connectionLock = new ReentrantLock();
-
   @GuardedBy("connectionLock")
-  private @Nullable Connection connection = null;
+  private @Nullable AsyncSubject<Connection> connectionAsyncSubject = null;
+  private final ReentrantLock connectionLock = new ReentrantLock();
+  private final AtomicReference<Disposable> connectionCreationDisposable =
+      new AtomicReference<>(null);
 
   public SharedConnectionFactory(ConnectionFactory factory, int maxConcurrency) {
     this.factory = factory;
@@ -39,11 +42,23 @@ public class SharedConnectionFactory implements ConnectionPool {
   public void close() throws IOException {
     tokenBucket.close();
 
+    Disposable d = connectionCreationDisposable.getAndSet(null);
+    if (d != null && !d.isDisposed()) {
+      d.dispose();
+    }
+
     try {
       connectionLock.lockInterruptibly();
-      if (connection != null) {
-        connection.close();
-        connection = null;
+
+      if (connectionAsyncSubject != null) {
+        Connection connection = connectionAsyncSubject.getValue();
+        if (connection != null) {
+          connection.close();
+        }
+
+        if (!connectionAsyncSubject.hasComplete()) {
+          connectionAsyncSubject.onError(new IllegalStateException("closed"));
+        }
       }
     } catch (InterruptedException e) {
       throw new IOException(e);
@@ -52,22 +67,27 @@ public class SharedConnectionFactory implements ConnectionPool {
     }
   }
 
-  @SuppressWarnings("GuardedBy")
-  private Single<? extends Connection> acquireConnection() {
-    return Single.using(
-        () -> {
-          connectionLock.lockInterruptibly();
-          return connectionLock;
-        },
-        ignored -> {
-          if (connection == null) {
-            return factory.create().doOnSuccess(conn -> connection = conn);
-          }
+  private AsyncSubject<Connection> createUnderlyingConnectionIfNot() throws InterruptedException {
+    connectionLock.lockInterruptibly();
+    try {
+      if (connectionAsyncSubject == null || connectionAsyncSubject.hasThrowable()) {
+        connectionAsyncSubject =
+            factory
+                .create()
+                .doOnSubscribe(connectionCreationDisposable::set)
+                .toObservable()
+                .subscribeWith(AsyncSubject.create());
+      }
 
-          return Single.just(connection);
-        },
-        ReentrantLock::unlock,
-        /* eager= */ true);
+      return connectionAsyncSubject;
+    } finally {
+      connectionLock.unlock();
+    }
+  }
+
+  private Single<? extends Connection> acquireConnection() {
+    return Single.fromCallable(this::createUnderlyingConnectionIfNot)
+        .flatMap(Single::fromObservable);
   }
 
   @Override
@@ -77,12 +97,9 @@ public class SharedConnectionFactory implements ConnectionPool {
         .flatMap(
             token ->
                 acquireConnection()
+                    .doOnError(ignored -> tokenBucket.addToken(token))
+                    .doOnDispose(() -> tokenBucket.addToken(token))
                     .map(conn -> new SharedConnection(conn, () -> tokenBucket.addToken(token))));
-  }
-
-  @VisibleForTesting
-  ReentrantLock getConnectionLock() {
-    return connectionLock;
   }
 
   public int numAvailableConnections() {

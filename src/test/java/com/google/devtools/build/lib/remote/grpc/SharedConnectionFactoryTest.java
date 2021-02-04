@@ -1,14 +1,9 @@
 package com.google.devtools.build.lib.remote.grpc;
 
-import static com.google.common.truth.Truth.assertThat;
-import static org.mockito.Mockito.*;
-import static org.mockito.MockitoAnnotations.initMocks;
-
 import com.google.devtools.build.lib.remote.grpc.SharedConnectionFactory.SharedConnection;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
-import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -18,11 +13,16 @@ import org.mockito.Mock;
 
 import java.io.IOException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
+
+import static com.google.common.truth.Truth.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.MockitoAnnotations.initMocks;
 
 /** Tests for {@link SharedConnectionFactory}. */
 @RunWith(JUnit4.class)
@@ -58,6 +58,7 @@ public class SharedConnectionFactoryTest {
     TestObserver<SharedConnection> observer = factory.create().test();
 
     observer.assertValue(conn -> conn.getUnderlyingConnection() == connection).assertComplete();
+    verify(connectionFactory, times(1)).create();
     assertThat(factory.numAvailableConnections()).isEqualTo(0);
   }
 
@@ -71,7 +72,7 @@ public class SharedConnectionFactoryTest {
   }
 
   @Test
-  public void create_pendingWhenExceedingMaxConcurrency() {
+  public void create_exceedingMaxConcurrency_waiting() {
     SharedConnectionFactory factory = new SharedConnectionFactory(connectionFactory, 1);
     TestObserver<SharedConnection> observer1 = factory.create().test();
     assertThat(factory.numAvailableConnections()).isEqualTo(0);
@@ -139,9 +140,43 @@ public class SharedConnectionFactoryTest {
   }
 
   @Test
-  public void create_dispose_cancelCreation() {
-    AtomicBoolean disposed = new AtomicBoolean(false);
+  public void create_afterLastFailed_success() {
+    AtomicInteger times = new AtomicInteger(0);
+    ConnectionFactory connectionFactory = mock(ConnectionFactory.class);
+    when(connectionFactory.create())
+        .thenAnswer(
+            invocation -> {
+              if (times.getAndIncrement() == 0) {
+                return Single.error(new IllegalStateException("error"));
+              } else {
+                return Single.just(connection);
+              }
+            });
+    SharedConnectionFactory factory = new SharedConnectionFactory(connectionFactory, 1);
+    Single<SharedConnection> connectionSingle = factory.create();
+
+    connectionSingle
+        .test()
+        .assertError(
+            error ->
+                error instanceof IllegalStateException && error.getMessage().contains("error"));
+    assertThat(factory.numAvailableConnections()).isEqualTo(1);
+    connectionSingle
+        .test()
+        .assertValue(conn -> conn.getUnderlyingConnection() == connection)
+        .assertComplete();
+
+    assertThat(times.get()).isEqualTo(2);
+    assertThat(factory.numAvailableConnections()).isEqualTo(0);
+  }
+
+  @Test
+  public void create_disposeWhenWaitingForConnectionCreation_doNotCancelCreation()
+      throws InterruptedException {
+    AtomicBoolean canceled = new AtomicBoolean(false);
     AtomicBoolean finished = new AtomicBoolean(false);
+    Semaphore disposed = new Semaphore(0);
+    Semaphore terminated = new Semaphore(0);
     ConnectionFactory connectionFactory = mock(ConnectionFactory.class);
     when(connectionFactory.create())
         .thenAnswer(
@@ -151,22 +186,27 @@ public class SharedConnectionFactoryTest {
                             new Thread(
                                     () -> {
                                       try {
-                                        Thread.sleep(Integer.MAX_VALUE);
+                                        disposed.acquire();
                                         finished.set(true);
-                                        emitter.onSuccess(connectionFactory);
+                                        emitter.onSuccess(connection);
                                       } catch (InterruptedException e) {
                                         emitter.onError(e);
                                       }
+                                      terminated.release();
                                     })
                                 .start())
-                    .doOnDispose(() -> disposed.set(true)));
+                    .doOnDispose(() -> canceled.set(true)));
     SharedConnectionFactory factory = new SharedConnectionFactory(connectionFactory, 1);
     TestObserver<SharedConnection> observer = factory.create().test();
+    assertThat(factory.numAvailableConnections()).isEqualTo(0);
 
     observer.assertEmpty().dispose();
+    disposed.release();
 
-    assertThat(disposed.get()).isTrue();
-    assertThat(finished.get()).isFalse();
+    terminated.acquire();
+    assertThat(canceled.get()).isFalse();
+    assertThat(finished.get()).isTrue();
+    assertThat(factory.numAvailableConnections()).isEqualTo(1);
   }
 
   @Test
@@ -174,6 +214,7 @@ public class SharedConnectionFactoryTest {
     AtomicBoolean finished = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(true);
     Semaphore threadTerminatedSemaphore = new Semaphore(0);
+    Semaphore connectionCreationSemaphore = new Semaphore(0);
     ConnectionFactory connectionFactory = mock(ConnectionFactory.class);
     when(connectionFactory.create())
         .thenAnswer(
@@ -197,25 +238,18 @@ public class SharedConnectionFactoryTest {
         new Thread(
             () -> {
               try {
-                SharedConnection ignored = factory.create().blockingGet();
-              } catch (RuntimeException e) {
-                if (e.getCause() instanceof InterruptedException) {
-                  interrupted.set(true);
-                } else {
-                  throw e;
-                }
+                TestObserver<SharedConnection> observer = factory.create().test();
+                connectionCreationSemaphore.release();
+                observer.await();
+              } catch (InterruptedException e) {
+                interrupted.set(true);
               }
 
               threadTerminatedSemaphore.release();
             });
     t.start();
 
-    // busy wait
-    while (true) {
-      if (factory.getConnectionLock().getQueueLength() > 0) {
-        break;
-      }
-    }
+    connectionCreationSemaphore.acquire();
     t.interrupt();
     threadTerminatedSemaphore.acquire();
 
@@ -255,6 +289,49 @@ public class SharedConnectionFactoryTest {
 
     TestObserver<SharedConnection> observer = factory.create().test();
 
-    observer.assertError(error -> error.getMessage().contains("closed"));
+    observer.assertError(e -> e instanceof IllegalStateException && e.getMessage().contains("closed"));
+  }
+
+  @Test
+  public void closeFactory_pendingConnectionCreation_closedError()
+      throws IOException, InterruptedException {
+    AtomicBoolean canceled = new AtomicBoolean(false);
+    AtomicBoolean finished = new AtomicBoolean(false);
+    Semaphore terminated = new Semaphore(0);
+    ConnectionFactory connectionFactory = mock(ConnectionFactory.class);
+    when(connectionFactory.create())
+        .thenAnswer(
+            invocation ->
+                Single.create(
+                        emitter -> {
+                          Thread t =
+                              new Thread(
+                                  () -> {
+                                    try {
+                                      Thread.sleep(Integer.MAX_VALUE);
+                                      finished.set(true);
+                                      emitter.onSuccess(connection);
+                                    } catch (InterruptedException ignored) {
+                                      /* no-op */
+                                    }
+
+                                    terminated.release();
+                                  });
+                          t.start();
+
+                          emitter.setCancellable(t::interrupt);
+                        })
+                    .doOnDispose(() -> canceled.set(true)));
+    SharedConnectionFactory factory = new SharedConnectionFactory(connectionFactory, 1);
+    TestObserver<SharedConnection> observer = factory.create().test();
+    observer.assertEmpty();
+
+    assertThat(canceled.get()).isFalse();
+    factory.close();
+
+    terminated.acquire();
+    observer.assertError(e -> e instanceof IllegalStateException && e.getMessage().contains("closed"));
+    assertThat(canceled.get()).isTrue();
+    assertThat(finished.get()).isFalse();
   }
 }

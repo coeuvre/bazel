@@ -147,7 +147,7 @@ public class TokenBucketTest {
 
     TestObserver<Integer> observer = bucket.acquireToken().test();
 
-    observer.assertError(e -> e.getMessage().contains("closed"));
+    observer.assertError(e -> e instanceof IllegalStateException && e.getMessage().contains("closed"));
   }
 
   @Test
@@ -157,7 +157,7 @@ public class TokenBucketTest {
 
     bucket.close();
 
-    observer.assertError(e -> e.getMessage().contains("closed"));
+    observer.assertError(e -> e instanceof IllegalStateException && e.getMessage().contains("closed"));
   }
 }
 

@@ -20,7 +20,7 @@ public class TokenBucket<T> implements Closeable {
   @GuardedBy("this")
   private final Deque<T> tokens;
 
-  private final BehaviorSubject<T> tokenSubject = BehaviorSubject.create();
+  private final BehaviorSubject<T> tokenBehaviorSubject = BehaviorSubject.create();
 
   public TokenBucket() {
     tokens = new ArrayDeque<>();
@@ -30,7 +30,7 @@ public class TokenBucket<T> implements Closeable {
     tokens = new ArrayDeque<>(initialTokens);
 
     if (!tokens.isEmpty()) {
-      tokenSubject.onNext(tokens.getFirst());
+      tokenBehaviorSubject.onNext(tokens.getFirst());
     }
   }
 
@@ -39,7 +39,7 @@ public class TokenBucket<T> implements Closeable {
       tokens.addLast(token);
     }
 
-    tokenSubject.onNext(token);
+    tokenBehaviorSubject.onNext(token);
   }
 
   public synchronized int size() {
@@ -49,7 +49,7 @@ public class TokenBucket<T> implements Closeable {
   public Single<T> acquireToken() {
     return Single.create(
         downstream ->
-            tokenSubject.subscribe(
+            tokenBehaviorSubject.subscribe(
                 new Observer<T>() {
                   Disposable upstream;
 
@@ -88,6 +88,6 @@ public class TokenBucket<T> implements Closeable {
 
   @Override
   public void close() throws IOException {
-    tokenSubject.onComplete();
+    tokenBehaviorSubject.onComplete();
   }
 }
