@@ -1,5 +1,6 @@
 package com.google.devtools.build.lib.remote.grpc;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
@@ -12,7 +13,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 @ThreadSafe
@@ -20,7 +20,7 @@ public class SharedConnectionFactory implements ConnectionPool {
   private final TokenBucket<Integer> tokenBucket;
   private final ConnectionFactory factory;
 
-  private final Lock connectionLock = new ReentrantLock();
+  private final ReentrantLock connectionLock = new ReentrantLock();
 
   @GuardedBy("connectionLock")
   private @Nullable Connection connection = null;
@@ -39,12 +39,14 @@ public class SharedConnectionFactory implements ConnectionPool {
   public void close() throws IOException {
     tokenBucket.close();
 
-    connectionLock.lock();
     try {
+      connectionLock.lockInterruptibly();
       if (connection != null) {
         connection.close();
         connection = null;
       }
+    } catch (InterruptedException e) {
+      throw new IOException(e);
     } finally {
       connectionLock.unlock();
     }
@@ -54,7 +56,7 @@ public class SharedConnectionFactory implements ConnectionPool {
   private Single<? extends Connection> acquireConnection() {
     return Single.using(
         () -> {
-          connectionLock.lock();
+          connectionLock.lockInterruptibly();
           return connectionLock;
         },
         ignored -> {
@@ -64,7 +66,7 @@ public class SharedConnectionFactory implements ConnectionPool {
 
           return Single.just(connection);
         },
-        Lock::unlock,
+        ReentrantLock::unlock,
         /* eager= */ true);
   }
 
@@ -76,6 +78,11 @@ public class SharedConnectionFactory implements ConnectionPool {
             token ->
                 acquireConnection()
                     .map(conn -> new SharedConnection(conn, () -> tokenBucket.addToken(token))));
+  }
+
+  @VisibleForTesting
+  ReentrantLock getConnectionLock() {
+    return connectionLock;
   }
 
   public int numAvailableConnections() {

@@ -112,7 +112,7 @@ public class TokenBucketTest {
   }
 
   @Test
-  public void acquireToken_reSubscription_acquiredAddedToken() {
+  public void acquireToken_reSubscription_acquireNewToken() {
     TokenBucket<Integer> bucket = new TokenBucket<>();
     bucket.addToken(0);
     Single<Integer> tokenSingle = bucket.acquireToken();
