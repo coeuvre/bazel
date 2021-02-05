@@ -90,6 +90,10 @@ public class SharedConnectionFactory implements ConnectionPool {
         .flatMap(Single::fromObservable);
   }
 
+  private void releaseToken(Integer token) {
+    tokenBucket.addToken(token);
+  }
+
   @Override
   public Single<SharedConnection> create() {
     return tokenBucket
@@ -97,9 +101,9 @@ public class SharedConnectionFactory implements ConnectionPool {
         .flatMap(
             token ->
                 acquireConnection()
-                    .doOnError(ignored -> tokenBucket.addToken(token))
-                    .doOnDispose(() -> tokenBucket.addToken(token))
-                    .map(conn -> new SharedConnection(conn, () -> tokenBucket.addToken(token))));
+                    .doOnError(ignored -> releaseToken(token))
+                    .doOnDispose(() -> releaseToken(token))
+                    .map(conn -> new SharedConnection(conn, () -> releaseToken(token))));
   }
 
   public int numAvailableConnections() {

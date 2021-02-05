@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.remote;
 
 import com.google.devtools.build.lib.remote.grpc.ChannelConnectionFactory;
 import com.google.devtools.build.lib.remote.grpc.ChannelConnectionFactory.ChannelConnection;
-import com.google.devtools.build.lib.remote.grpc.Connection;
 import com.google.devtools.build.lib.remote.grpc.DynamicConnectionPool;
 import com.google.devtools.build.lib.remote.grpc.SharedConnectionFactory.SharedConnection;
 import io.grpc.*;
@@ -55,46 +54,31 @@ public class ReferenceCountedChannel extends Channel implements ReferenceCounted
         new DynamicConnectionPool(connectionFactory, connectionFactory.maxConcurrency());
   }
 
-  static class ConnectionCleanupInterceptor implements ClientInterceptor {
-    private final Connection connection;
+  static class ConnectionCleanupCall<ReqT, RespT>
+      extends ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT> {
+    private final SharedConnection connection;
 
-    ConnectionCleanupInterceptor(Connection connection) {
+    protected ConnectionCleanupCall(ClientCall<ReqT, RespT> delegate, SharedConnection connection) {
+      super(delegate);
       this.connection = connection;
     }
 
     @Override
-    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
-      ClientCall<ReqT, RespT> call = next.newCall(method, callOptions);
-      return new ConnectionCleanupCall<>(call, connection);
-    }
-
-    static class ConnectionCleanupCall<ReqT, RespT>
-        extends ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT> {
-      private final Connection connection;
-
-      protected ConnectionCleanupCall(ClientCall<ReqT, RespT> delegate, Connection connection) {
-        super(delegate);
-        this.connection = connection;
-      }
-
-      @Override
-      public void start(Listener<RespT> responseListener, Metadata headers) {
-        super.start(
-            new ForwardingClientCallListener.SimpleForwardingClientCallListener<RespT>(
-                responseListener) {
-              @Override
-              public void onClose(Status status, Metadata trailers) {
-                super.onClose(status, trailers);
-                try {
-                  connection.close();
-                } catch (IOException e) {
-                  throw new AssertionError(e.getMessage(), e);
-                }
+    public void start(Listener<RespT> responseListener, Metadata headers) {
+      super.start(
+          new ForwardingClientCallListener.SimpleForwardingClientCallListener<RespT>(
+              responseListener) {
+            @Override
+            public void onClose(Status status, Metadata trailers) {
+              super.onClose(status, trailers);
+              try {
+                connection.close();
+              } catch (IOException e) {
+                throw new AssertionError(e.getMessage(), e);
               }
-            },
-            headers);
-      }
+            }
+          },
+          headers);
     }
   }
 
@@ -103,9 +87,8 @@ public class ReferenceCountedChannel extends Channel implements ReferenceCounted
       MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions callOptions) {
     SharedConnection sharedConnection = dynamicConnectionPool.create().blockingGet();
     ChannelConnection connection = (ChannelConnection) sharedConnection.getUnderlyingConnection();
-    return ClientInterceptors.intercept(
-            connection.getChannel(), new ConnectionCleanupInterceptor(sharedConnection))
-        .newCall(methodDescriptor, callOptions);
+    return new ConnectionCleanupCall<>(
+        connection.getChannel().newCall(methodDescriptor, callOptions), sharedConnection);
   }
 
   @Override
