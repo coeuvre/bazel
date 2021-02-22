@@ -93,6 +93,7 @@ import com.google.devtools.common.options.OptionsParsingResult;
 import io.grpc.CallCredentials;
 import io.grpc.ClientInterceptor;
 import io.grpc.ManagedChannel;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -280,6 +281,9 @@ public final class RemoteModule extends BlazeModule {
     String invocationId = env.getCommandId().toString();
     String buildRequestId = env.getBuildRequestId();
     env.getReporter().handle(Event.info(String.format("Invocation ID: %s", invocationId)));
+
+    RxJavaPlugins.setErrorHandler(
+        error -> env.getReporter().handle(Event.error(Throwables.getStackTraceAsString(error))));
 
     Path logDir =
         env.getOutputBase().getRelative(env.getRuntime().getProductName() + "-remote-logs");
