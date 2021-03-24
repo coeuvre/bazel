@@ -239,6 +239,21 @@ cc_proto_library(
 )
 
 proto_library(
+    name = "remote_execution_proto",
+    srcs = ["remote_execution.proto"],
+)
+
+java_proto_library(
+    name = "remote_execution_java_proto",
+    deps = [":remote_execution_proto"],
+)
+
+java_library_srcs(
+    name = "remote_execution_java_proto_srcs",
+    deps = [":remote_execution_java_proto"],
+)
+
+proto_library(
     name = "remote_execution_log_proto",
     srcs = ["remote_execution_log.proto"],
     deps = [
@@ -297,6 +312,7 @@ filegroup(
         ":failure_details_java_proto_srcs",
         ":option_filters_java_proto_srcs",
         ":profile_java_proto_srcs",
+        ":remote_execution_java_proto_srcs",
         ":remote_execution_log_java_proto_srcs",
         ":xcode_java_proto_srcs",
     ],

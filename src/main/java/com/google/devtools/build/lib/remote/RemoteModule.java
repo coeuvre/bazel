@@ -220,7 +220,7 @@ public final class RemoteModule extends BlazeModule {
       handleInitFailure(env, e, Code.CACHE_INIT_FAILURE);
       return;
     }
-    RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil);
+    RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil, remoteOutputService);
     actionContextProvider =
         RemoteActionContextProvider.createForRemoteCaching(
             env, remoteCache, /* retryScheduler= */ null, digestUtil);
@@ -231,6 +231,7 @@ public final class RemoteModule extends BlazeModule {
     Preconditions.checkState(actionContextProvider == null, "actionContextProvider must be null");
     Preconditions.checkState(actionInputFetcher == null, "actionInputFetcher must be null");
     Preconditions.checkState(remoteOutputsMode == null, "remoteOutputsMode must be null");
+    Preconditions.checkState(remoteOutputService == null, "remoteOutputService must be null");
 
     RemoteOptions remoteOptions = env.getOptions().getOptions(RemoteOptions.class);
     if (remoteOptions == null) {
@@ -289,6 +290,10 @@ public final class RemoteModule extends BlazeModule {
     Path logDir =
         env.getOutputBase().getRelative(env.getRuntime().getProductName() + "-remote-logs");
     cleanAndCreateRemoteLogsDir(logDir);
+
+    if (!remoteOutputsMode.downloadAllOutputs()) {
+      remoteOutputService = new RemoteOutputService();
+    }
 
     if ((enableHttpCache || enableDiskCache) && !enableGrpcCache) {
       initHttpAndDiskCache(env, authAndTlsOptions, remoteOptions, digestUtil);
@@ -523,7 +528,7 @@ public final class RemoteModule extends BlazeModule {
       }
       execChannel.release();
       RemoteExecutionCache remoteCache =
-          new RemoteExecutionCache(cacheClient, remoteOptions, digestUtil);
+          new RemoteExecutionCache(cacheClient, remoteOptions, digestUtil, remoteOutputService);
       actionContextProvider =
           RemoteActionContextProvider.createForRemoteExecution(
               env, remoteCache, remoteExecutor, retryScheduler, digestUtil, logDir);
@@ -553,7 +558,7 @@ public final class RemoteModule extends BlazeModule {
         }
       }
 
-      RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil);
+      RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil, remoteOutputService);
       actionContextProvider =
           RemoteActionContextProvider.createForRemoteCaching(
               env, remoteCache, retryScheduler, digestUtil);
@@ -815,15 +820,12 @@ public final class RemoteModule extends BlazeModule {
               env.getExecRoot());
       builder.setActionInputPrefetcher(actionInputFetcher);
       remoteOutputService.setActionInputFetcher(actionInputFetcher);
+      remoteOutputService.setExecRoot(env.getExecRoot());
     }
   }
 
   @Override
   public OutputService getOutputService() {
-    Preconditions.checkState(remoteOutputService == null, "remoteOutputService must be null");
-    if (remoteOutputsMode != null && !remoteOutputsMode.downloadAllOutputs()) {
-      remoteOutputService = new RemoteOutputService();
-    }
     return remoteOutputService;
   }
 

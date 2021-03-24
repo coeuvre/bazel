@@ -19,6 +19,7 @@ PATH_FRAGMENT_SOURCES = [
 
 OUTPUT_SERVICE_SOURCES = [
     "OutputService.java",
+    "OutputTree.java",
 ]
 
 java_library(
@@ -67,8 +68,10 @@ java_library(
         ":vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/actions:fileset_output_symlink",
         "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:tree_artifact_value",
         "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//third_party:guava",

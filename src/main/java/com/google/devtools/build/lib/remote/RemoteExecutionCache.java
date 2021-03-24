@@ -38,8 +38,9 @@ import java.util.Map;
 public class RemoteExecutionCache extends RemoteCache {
 
   public RemoteExecutionCache(
-      RemoteCacheClient protocolImpl, RemoteOptions options, DigestUtil digestUtil) {
-    super(protocolImpl, options, digestUtil);
+      RemoteCacheClient protocolImpl, RemoteOptions options, DigestUtil digestUtil,
+      RemoteOutputService remoteOutputService) {
+    super(protocolImpl, options, digestUtil, remoteOutputService);
   }
 
   /**

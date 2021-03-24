@@ -94,7 +94,8 @@ final class ActionMetadataHandler implements MetadataHandler {
       ArtifactPathResolver artifactPathResolver,
       PathFragment execRoot,
       PathFragment derivedPathPrefix,
-      Map<Artifact, ImmutableList<FilesetOutputSymlink>> expandedFilesets) {
+      Map<Artifact, ImmutableList<FilesetOutputSymlink>> expandedFilesets,
+      OutputStore outputStore) {
     return new ActionMetadataHandler(
         inputArtifactData,
         forInputDiscovery,
@@ -105,7 +106,7 @@ final class ActionMetadataHandler implements MetadataHandler {
         execRoot,
         derivedPathPrefix,
         createFilesetMapping(expandedFilesets, execRoot),
-        new OutputStore());
+        outputStore);
   }
 
   private final ActionInputMap inputArtifactData;

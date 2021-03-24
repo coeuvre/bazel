@@ -87,9 +87,7 @@ import com.google.devtools.build.lib.util.DetailedExitCode.DetailedExitCodeCompa
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
-import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.*;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -710,6 +708,25 @@ public class ActionExecutionFunction implements SkyFunction {
     }
   }
 
+  private void loadMetadataFromOutputTree(Action action, OutputStore outputStore) {
+    OutputTree outputTree = skyframeActionExecutor.getOutputTree();
+    if (outputTree != null) {
+      for (Artifact output : action.getOutputs()) {
+        if (output.isTreeArtifact()) {
+          TreeArtifactValue metadata = outputTree.getTreeMetadata((SpecialArtifact) output);
+          if (metadata != null) {
+            outputStore.putTreeArtifactData((SpecialArtifact) output, metadata);
+          }
+        } else {
+          FileArtifactValue metadata = outputTree.getFileMetadata(output);
+          if (metadata != null) {
+            outputStore.putArtifactData(output, metadata);
+          }
+        }
+      }
+    }
+  }
+
   private ActionExecutionValue checkCacheAndExecuteIfNeeded(
       Action action,
       ContinuationState state,
@@ -746,6 +763,9 @@ public class ActionExecutionFunction implements SkyFunction {
             Collections.unmodifiableMap(state.archivedTreeArtifacts),
             expandedFilesets);
 
+    OutputStore outputStore = new OutputStore();
+    loadMetadataFromOutputTree(action, outputStore);
+
     ArtifactPathResolver pathResolver =
         ArtifactPathResolver.createPathResolver(
             state.actionFileSystem, skyframeActionExecutor.getExecRoot());
@@ -759,7 +779,8 @@ public class ActionExecutionFunction implements SkyFunction {
             pathResolver,
             skyframeActionExecutor.getExecRoot().asFragment(),
             PathFragment.create(directories.getRelativeOutputPath()),
-            expandedFilesets);
+            expandedFilesets,
+            outputStore);
 
     // We only need to check the action cache if we haven't done it on a previous run.
     if (!state.hasCheckedActionCache()) {

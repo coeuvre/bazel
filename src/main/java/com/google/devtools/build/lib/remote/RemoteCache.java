@@ -68,12 +68,7 @@ import com.google.devtools.build.lib.server.FailureDetails.RemoteExecution.Code;
 import com.google.devtools.build.lib.skyframe.TreeArtifactValue;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.util.io.OutErr;
-import com.google.devtools.build.lib.vfs.Dirent;
-import com.google.devtools.build.lib.vfs.FileStatus;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.Symlinks;
+import com.google.devtools.build.lib.vfs.*;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.ByteArrayOutputStream;
@@ -108,12 +103,27 @@ public class RemoteCache implements AutoCloseable {
   protected final RemoteCacheClient cacheProtocol;
   protected final RemoteOptions options;
   protected final DigestUtil digestUtil;
+  @Nullable protected final RemoteOutputService remoteOutputService;
 
   public RemoteCache(
       RemoteCacheClient cacheProtocol, RemoteOptions options, DigestUtil digestUtil) {
+    this(cacheProtocol, options, digestUtil, null);
+  }
+
+  public RemoteCache(
+      RemoteCacheClient cacheProtocol,
+      RemoteOptions options,
+      DigestUtil digestUtil,
+      @Nullable RemoteOutputService remoteOutputService) {
     this.cacheProtocol = cacheProtocol;
     this.options = options;
     this.digestUtil = digestUtil;
+    this.remoteOutputService = remoteOutputService;
+  }
+
+  @Nullable
+  public OutputTree getOutputTree() {
+    return remoteOutputService != null ? remoteOutputService.getOutputTree() : null;
   }
 
   public ActionResult downloadActionResult(
@@ -652,6 +662,8 @@ public class RemoteCache implements AutoCloseable {
       MetadataInjector metadataInjector,
       String actionId)
       throws IOException {
+    OutputTree outputTree = getOutputTree();
+
     if (output.isTreeArtifact()) {
       DirectoryMetadata directory =
           metadata.directory(execRoot.getRelative(output.getExecPathString()));
@@ -679,7 +691,11 @@ public class RemoteCache implements AutoCloseable {
                 file.isExecutable());
         tree.putChild(child, value);
       }
-      metadataInjector.injectTree(parent, tree.build());
+      TreeArtifactValue value = tree.build();
+      if (outputTree != null) {
+        outputTree.putTreeMetadata(parent, value);
+      }
+      metadataInjector.injectTree(parent, value);
     } else {
       FileMetadata outputMetadata = metadata.file(execRoot.getRelative(output.getExecPathString()));
       if (outputMetadata == null) {
@@ -687,14 +703,19 @@ public class RemoteCache implements AutoCloseable {
         // SkyFrame will make sure to fail.
         return;
       }
-      metadataInjector.injectFile(
-          output,
-          new RemoteActionFileArtifactValue(
-              DigestUtil.toBinaryDigest(outputMetadata.digest()),
-              outputMetadata.digest().getSizeBytes(),
-              /*locationIndex=*/ 1,
-              actionId,
-              outputMetadata.isExecutable()));
+
+      RemoteActionFileArtifactValue value = new RemoteActionFileArtifactValue(
+          DigestUtil.toBinaryDigest(outputMetadata.digest()),
+          outputMetadata.digest().getSizeBytes(),
+          /*locationIndex=*/ 1,
+          actionId,
+          outputMetadata.isExecutable());
+
+      if (outputTree != null) {
+        outputTree.putFileMetadata(output, value);
+      }
+
+      metadataInjector.injectFile(output, value);
     }
   }
 

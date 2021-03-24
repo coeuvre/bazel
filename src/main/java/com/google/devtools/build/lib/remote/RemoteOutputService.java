@@ -28,20 +28,31 @@ import com.google.devtools.build.lib.vfs.BatchStat;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.OutputService;
+import com.google.devtools.build.lib.vfs.OutputTree;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
+
+import javax.annotation.Nullable;
 import java.util.Map;
 import java.util.UUID;
-import javax.annotation.Nullable;
 
 /** Output service implementation for the remote module */
 public class RemoteOutputService implements OutputService {
 
+  private final RemoteOutputTree remoteOutputTree;
   @Nullable private RemoteActionInputFetcher actionInputFetcher;
+
+  public RemoteOutputService() {
+    this.remoteOutputTree = new RemoteOutputTree();
+  }
 
   void setActionInputFetcher(RemoteActionInputFetcher actionInputFetcher) {
     this.actionInputFetcher = Preconditions.checkNotNull(actionInputFetcher, "actionInputFetcher");
+  }
+
+  void setExecRoot(Path execRoot) {
+    remoteOutputTree.setExecRoot(execRoot);
   }
 
   @Override
@@ -84,6 +95,12 @@ public class RemoteOutputService implements OutputService {
   @Override
   public void finalizeBuild(boolean buildSuccessful) {
     // Intentionally left empty.
+  }
+
+  @Nullable
+  @Override
+  public OutputTree getOutputTree() {
+    return remoteOutputTree;
   }
 
   @Override

@@ -144,6 +144,11 @@ public interface OutputService {
   /** @return true iff the file actually lives on a remote server */
   boolean isRemoteFile(Artifact file);
 
+  @Nullable
+  default OutputTree getOutputTree() {
+    return null;
+  }
+
   default ActionFileSystemType actionFileSystemType() {
     return ActionFileSystemType.DISABLED;
   }

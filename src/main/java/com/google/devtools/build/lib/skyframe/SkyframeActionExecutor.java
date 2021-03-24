@@ -100,14 +100,8 @@ import com.google.devtools.build.lib.skyframe.ActionExecutionState.SharedActionC
 import com.google.devtools.build.lib.util.CrashFailureDetails;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.io.FileOutErr;
-import com.google.devtools.build.lib.vfs.FileStatus;
-import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.OutputService;
+import com.google.devtools.build.lib.vfs.*;
 import com.google.devtools.build.lib.vfs.OutputService.ActionFileSystemType;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.Root;
-import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.common.options.OptionsProvider;
@@ -320,6 +314,11 @@ public final class SkyframeActionExecutor {
 
   boolean publishTargetSummaries() {
     return options.getOptions(BuildEventProtocolOptions.class).publishTargetSummary;
+  }
+
+  @Nullable
+  OutputTree getOutputTree() {
+    return outputService != null ? outputService.getOutputTree() : null;
   }
 
   /** REQUIRES: {@link #actionFileSystemType()} to be not {@code DISABLED}. */
