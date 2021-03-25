@@ -145,9 +145,7 @@ public interface OutputService {
   boolean isRemoteFile(Artifact file);
 
   @Nullable
-  default OutputTree getOutputTree() {
-    return null;
-  }
+  OutputTree getOutputTree();
 
   default ActionFileSystemType actionFileSystemType() {
     return ActionFileSystemType.DISABLED;
