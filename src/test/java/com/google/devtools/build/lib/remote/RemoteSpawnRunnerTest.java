@@ -219,7 +219,7 @@ public class RemoteSpawnRunnerTest {
             any(RemoteActionExecutionContext.class),
             any(ActionKey.class),
             /* inlineOutErr= */ eq(false));
-    verify(cache, never()).upload(any(), any(), any(), any(), any(), any(), any());
+    verify(cache, never()).upload(any(), any(), any(), any(), any(), any(), any(), any());
     verifyNoMoreInteractions(localRunner);
   }
 
@@ -303,7 +303,7 @@ public class RemoteSpawnRunnerTest {
             any(),
             any(),
             /* uploadLocalResults= */ eq(true));
-    verify(cache).upload(any(), any(), any(), any(), any(), any(), any());
+    verify(cache).upload(any(), any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -343,7 +343,7 @@ public class RemoteSpawnRunnerTest {
             any(),
             any(),
             /* uploadLocalResults= */ eq(true));
-    verify(cache, never()).upload(any(), any(), any(), any(), any(), any(), any());
+    verify(cache, never()).upload(any(), any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -393,7 +393,7 @@ public class RemoteSpawnRunnerTest {
             any(),
             any(),
             /* uploadLocalResults= */ eq(true));
-    verify(cache).upload(any(), any(), any(), any(), any(), any(), any());
+    verify(cache).upload(any(), any(), any(), any(), any(), any(), any(), any());
     verify(cache, never())
         .download(
             any(RemoteActionExecutionContext.class),
@@ -470,7 +470,7 @@ public class RemoteSpawnRunnerTest {
 
     doThrow(new IOException("cache down"))
         .when(cache)
-        .upload(any(), any(), any(), any(), any(), any(), any());
+        .upload(any(), any(), any(), any(), any(), any(), any(), any());
 
     SpawnResult res =
         new SpawnResult.Builder()

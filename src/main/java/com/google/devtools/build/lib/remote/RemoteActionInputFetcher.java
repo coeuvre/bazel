@@ -21,10 +21,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
-import com.google.devtools.build.lib.actions.ActionInput;
-import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
-import com.google.devtools.build.lib.actions.FileArtifactValue;
-import com.google.devtools.build.lib.actions.MetadataProvider;
+import com.google.devtools.build.lib.actions.*;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput.EmptyActionInput;
 import com.google.devtools.build.lib.profiler.Profiler;
@@ -99,10 +96,12 @@ class RemoteActionInputFetcher implements ActionInputPrefetcher {
             continue;
           }
 
-          Path path = execRoot.getRelative(input.getExecPath());
-          synchronized (lock) {
-            downloadsToWaitFor.computeIfAbsent(
-                path, key -> RxFutures.toListenableFuture(downloadFileAsync(path, metadata)));
+          Path path = ActionInputHelper.toInputPath(input, execRoot);
+          if (!path.exists()) {
+            synchronized (lock) {
+              downloadsToWaitFor.computeIfAbsent(
+                  path, key -> RxFutures.toListenableFuture(downloadFileAsync(path, metadata)));
+            }
           }
         }
       }

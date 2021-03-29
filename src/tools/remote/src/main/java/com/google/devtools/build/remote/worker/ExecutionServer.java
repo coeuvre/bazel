@@ -344,7 +344,7 @@ final class ExecutionServer extends ExecutionImplBase {
       ActionResult result = null;
       try {
         result =
-            cache.upload(context, actionKey, action, command, execRoot, outputs, outErr, exitCode);
+            cache.upload(context, actionKey, action, command, execRoot, outputs, outErr, exitCode).getActionResult();
       } catch (ExecException e) {
         if (errStatus == null) {
           errStatus =

@@ -1445,14 +1445,17 @@ public class RemoteCacheTests {
     // act
     InMemoryRemoteCache remoteCache = newRemoteCache();
     ActionResult result =
-        remoteCache.upload(
-            context,
-            digestUtil.asActionKey(actionDigest),
-            action,
-            cmd,
-            execRoot,
-            ImmutableList.of(fooFile, barDir),
-            new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")));
+        remoteCache
+            .upload(
+                context,
+                digestUtil.asActionKey(actionDigest),
+                action,
+                cmd,
+                execRoot,
+                ImmutableList.of(fooFile, barDir),
+                new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")),
+                0)
+            .getActionResult();
 
     // assert
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
@@ -1482,14 +1485,17 @@ public class RemoteCacheTests {
     // act
     InMemoryRemoteCache remoteCache = newRemoteCache();
     ActionResult result =
-        remoteCache.upload(
-            context,
-            actionDigest,
-            action,
-            cmd,
-            execRoot,
-            ImmutableList.of(barDir),
-            new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")));
+        remoteCache
+            .upload(
+                context,
+                actionDigest,
+                action,
+                cmd,
+                execRoot,
+                ImmutableList.of(barDir),
+                new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")),
+                0)
+            .getActionResult();
 
     // assert
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
@@ -1539,14 +1545,17 @@ public class RemoteCacheTests {
     // act
     InMemoryRemoteCache remoteCache = newRemoteCache();
     ActionResult result =
-        remoteCache.upload(
-            context,
-            actionDigest,
-            action,
-            cmd,
-            execRoot,
-            ImmutableList.of(barDir),
-            new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")));
+        remoteCache
+            .upload(
+                context,
+                actionDigest,
+                action,
+                cmd,
+                execRoot,
+                ImmutableList.of(barDir),
+                new FileOutErr(execRoot.getRelative("stdout"), execRoot.getRelative("stderr")),
+                0)
+            .getActionResult();
 
     // assert
     ActionResult.Builder expectedResult = ActionResult.newBuilder();

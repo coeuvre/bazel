@@ -811,7 +811,6 @@ public class RemoteSpawnRunner implements SpawnRunner {
       }
     }
 
-    Collection<Path> outputFiles = resolveActionInputs(execRoot, spawn.getOutputFiles());
     try (SilentCloseable c = Profiler.instance().profile(UPLOAD_TIME, "upload outputs")) {
       remoteCache.upload(
           remoteActionExecutionContext,
@@ -819,8 +818,9 @@ public class RemoteSpawnRunner implements SpawnRunner {
           action,
           command,
           execRoot,
-          outputFiles,
-          context.getFileOutErr());
+          spawn.getOutputFiles(),
+          context.getFileOutErr(),
+          context.getMetadataInjector());
     } catch (IOException e) {
       if (verboseFailures) {
         report(Event.debug("Upload to remote cache failed: " + e.getMessage()));
@@ -841,17 +841,6 @@ public class RemoteSpawnRunner implements SpawnRunner {
     if (cmdlineReporter != null) {
       cmdlineReporter.handle(evt);
     }
-  }
-
-  /**
-   * Resolve a collection of {@link com.google.devtools.build.lib.actions.ActionInput}s to {@link
-   * Path}s.
-   */
-  static Collection<Path> resolveActionInputs(
-      Path execRoot, Collection<? extends ActionInput> actionInputs) {
-    return actionInputs.stream()
-        .map((inp) -> execRoot.getRelative(inp.getExecPath()))
-        .collect(ImmutableList.toImmutableList());
   }
 
   private static RemoteRetrier createExecuteRetrier(

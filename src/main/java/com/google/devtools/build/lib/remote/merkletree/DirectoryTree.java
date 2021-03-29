@@ -252,7 +252,7 @@ final class DirectoryTree {
 
   private static String formatFile(FileNode file) {
     return String.format(
-        "%s (hash: %s, size: %d)",
-        file.getPathSegment(), file.digest.getHash(), file.digest.getSizeBytes());
+        "%s (hash: %s, size: %d, isExecutable: %s)",
+        file.getPathSegment(), file.digest.getHash(), file.digest.getSizeBytes(), file.isExecutable());
   }
 }

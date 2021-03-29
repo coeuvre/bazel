@@ -29,14 +29,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
-import com.google.devtools.build.lib.actions.ActionInput;
-import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.FileArtifactValue;
-import com.google.devtools.build.lib.actions.Spawn;
-import com.google.devtools.build.lib.actions.SpawnMetrics;
-import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.*;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
-import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.analysis.platform.PlatformUtils;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -283,8 +277,6 @@ final class RemoteSpawnCache implements SpawnCache {
             }
           }
 
-          Collection<Path> files =
-              RemoteSpawnRunner.resolveActionInputs(execRoot, spawn.getOutputFiles());
           try (SilentCloseable c = prof.profile(ProfilerTask.UPLOAD_TIME, "upload outputs")) {
             remoteCache.upload(
                 remoteActionExecutionContext,
@@ -292,8 +284,9 @@ final class RemoteSpawnCache implements SpawnCache {
                 action,
                 command,
                 execRoot.getParentDirectory(),
-                files,
-                context.getFileOutErr());
+                spawn.getOutputFiles(),
+                context.getFileOutErr(),
+                context.getMetadataInjector());
           } catch (IOException e) {
             String errorMessage;
             if (!verboseFailures) {

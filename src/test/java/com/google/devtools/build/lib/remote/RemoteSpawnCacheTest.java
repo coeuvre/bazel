@@ -281,7 +281,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             any(Collection.class),
-            any(FileOutErr.class));
+            any(FileOutErr.class),
+            any(MetadataInjector.class));
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isTrue();
@@ -302,7 +303,7 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableList<? extends ActionInput> outputFiles = ImmutableList.of(ActionInputHelper.fromPath("/random/file"));
     Mockito.doAnswer(
             new Answer<Void>() {
               @Override
@@ -322,7 +323,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     entry.store(result);
     verify(remoteCache)
         .upload(
@@ -332,7 +334,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     assertThat(progressUpdates)
         .containsExactly(Pair.of(ProgressStatus.CHECKING_CACHE, "remote-cache"));
   }
@@ -490,7 +493,7 @@ public class RemoteSpawnCacheTest {
                     .build())
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableList<? extends ActionInput> outputFiles = ImmutableList.of(ActionInputHelper.fromPath("/random/file"));
     entry.store(result);
     verify(remoteCache, never())
         .upload(
@@ -500,7 +503,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     assertThat(progressUpdates)
         .containsExactly(Pair.of(ProgressStatus.CHECKING_CACHE, "remote-cache"));
   }
@@ -515,7 +519,7 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableList<? extends ActionInput> outputFiles = ImmutableList.of(ActionInputHelper.fromPath("/random/file"));
 
     doThrow(new IOException("cache down"))
         .when(remoteCache)
@@ -526,7 +530,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
 
     entry.store(result);
     verify(remoteCache)
@@ -537,7 +542,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
 
     assertThat(eventHandler.getEvents()).hasSize(1);
     Event evt = eventHandler.getEvents().get(0);
@@ -564,7 +570,7 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableList<? extends ActionInput> outputFiles = ImmutableList.of(ActionInputHelper.fromPath("/random/file"));
 
     Mockito.doAnswer(
             new Answer<Void>() {
@@ -585,7 +591,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     entry.store(result);
     verify(remoteCache)
         .upload(
@@ -595,7 +602,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
 
     assertThat(eventHandler.getEvents()).hasSize(1);
     Event evt = eventHandler.getEvents().get(0);
@@ -639,7 +647,7 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableList<? extends ActionInput> outputFiles = ImmutableList.of(ActionInputHelper.fromPath("/random/file"));
 
     Mockito.doAnswer(
             new Answer<Void>() {
@@ -660,7 +668,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     entry.store(result);
     verify(remoteCache)
         .upload(
@@ -670,7 +679,8 @@ public class RemoteSpawnCacheTest {
             any(Command.class),
             any(Path.class),
             eq(outputFiles),
-            eq(outErr));
+            eq(outErr),
+            any());
     assertThat(progressUpdates)
         .containsExactly(Pair.of(ProgressStatus.CHECKING_CACHE, "remote-cache"));
     assertThat(eventHandler.getEvents()).isEmpty(); // no warning is printed.

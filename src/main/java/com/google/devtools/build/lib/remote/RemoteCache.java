@@ -40,13 +40,9 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import com.google.devtools.build.lib.actions.ActionInput;
-import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.*;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
-import com.google.devtools.build.lib.actions.EnvironmentalExecException;
-import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.actions.cache.MetadataInjector;
 import com.google.devtools.build.lib.concurrent.ThreadSafety;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
@@ -128,7 +124,7 @@ public class RemoteCache implements AutoCloseable {
    * @throws IOException if there was an error uploading to the remote cache
    * @throws ExecException if uploading any of the action outputs is not supported
    */
-  public ActionResult upload(
+  public UploadManifest upload(
       RemoteActionExecutionContext context,
       ActionKey actionKey,
       Action action,
@@ -139,13 +135,15 @@ public class RemoteCache implements AutoCloseable {
       int exitCode)
       throws ExecException, IOException, InterruptedException {
     ActionResult.Builder resultBuilder = ActionResult.newBuilder();
-    uploadOutputs(context, execRoot, actionKey, action, command, outputs, outErr, resultBuilder);
+    UploadManifest manifest =
+        uploadOutputs(
+            context, execRoot, actionKey, action, command, outputs, outErr, resultBuilder);
     resultBuilder.setExitCode(exitCode);
-    ActionResult result = resultBuilder.build();
+    ActionResult result = manifest.getActionResult();
     if (exitCode == 0 && !action.getDoNotCache()) {
       cacheProtocol.uploadActionResult(context, actionKey, result);
     }
-    return result;
+    return manifest;
   }
 
   public ActionResult upload(
@@ -154,14 +152,43 @@ public class RemoteCache implements AutoCloseable {
       Action action,
       Command command,
       Path execRoot,
-      Collection<Path> outputs,
-      FileOutErr outErr)
+      Collection<? extends ActionInput> outputs,
+      FileOutErr outErr,
+      MetadataInjector metadataInjector)
       throws ExecException, IOException, InterruptedException {
-    return upload(
-        context, actionKey, action, command, execRoot, outputs, outErr, /* exitCode= */ 0);
+    Collection<Path> files =
+        outputs.stream()
+            .map(input -> ActionInputHelper.toInputPath(input, execRoot))
+            .collect(ImmutableList.toImmutableList());
+    UploadManifest manifest =
+        upload(context, actionKey, action, command, execRoot, files, outErr, /* exitCode= */ 0);
+
+    // Inject metadata of the uploaded outputs to ensure actions depending on the outputs have the
+    // same input metadata to the remote cached actions.
+    //
+    // TODO(chiwang): Ideally, the metadata computed by Bazel from file system should be the same to the uploaded one.
+    // However, Bazel currently will `chmod 555` the file if no metadata injected during action execution in
+    // `ActionMetadataHandler#getMetadata`. The `executable` bit is thus different. Remove this work around once that
+    // behaviour changed.
+    ActionResultMetadata metadata =
+        new ActionResultMetadata(
+            manifest.getFileMetadata(),
+            manifest.getSymlinkMetadata(),
+            manifest.getDirectoryMetadata());
+    for (ActionInput output : outputs) {
+      if (output instanceof Artifact) {
+        injectRemoteArtifact(
+            (Artifact) output,
+            metadata,
+            metadataInjector,
+            context.getRequestMetadata().getActionId());
+      }
+    }
+
+    return manifest.getActionResult();
   }
 
-  private void uploadOutputs(
+  private UploadManifest uploadOutputs(
       RemoteActionExecutionContext context,
       Path execRoot,
       ActionKey actionKey,
@@ -213,6 +240,8 @@ public class RemoteCache implements AutoCloseable {
     if (manifest.getStdoutDigest() != null) {
       result.setStdoutDigest(manifest.getStdoutDigest());
     }
+
+    return manifest;
   }
 
   public static void waitForBulkTransfer(
@@ -624,7 +653,7 @@ public class RemoteCache implements AutoCloseable {
         inMemoryOutput = output;
       }
       if (output instanceof Artifact) {
-        injectRemoteArtifact((Artifact) output, metadata, execRoot, metadataInjector, actionId);
+        injectRemoteArtifact((Artifact) output, metadata, metadataInjector, actionId);
       }
     }
 
@@ -648,13 +677,11 @@ public class RemoteCache implements AutoCloseable {
   private void injectRemoteArtifact(
       Artifact output,
       ActionResultMetadata metadata,
-      Path execRoot,
       MetadataInjector metadataInjector,
       String actionId)
       throws IOException {
     if (output.isTreeArtifact()) {
-      DirectoryMetadata directory =
-          metadata.directory(execRoot.getRelative(output.getExecPathString()));
+      DirectoryMetadata directory = metadata.directory(output.getPath());
       if (directory == null) {
         // A declared output wasn't created. It might have been an optional output and if not
         // SkyFrame will make sure to fail.
@@ -681,7 +708,7 @@ public class RemoteCache implements AutoCloseable {
       }
       metadataInjector.injectTree(parent, tree.build());
     } else {
-      FileMetadata outputMetadata = metadata.file(execRoot.getRelative(output.getExecPathString()));
+      FileMetadata outputMetadata = metadata.file(output.getPath());
       if (outputMetadata == null) {
         // A declared output wasn't created. It might have been an optional output and if not
         // SkyFrame will make sure to fail.
@@ -788,13 +815,17 @@ public class RemoteCache implements AutoCloseable {
   }
 
   /** UploadManifest adds output metadata to a {@link ActionResult}. */
-  static class UploadManifest {
+  public static class UploadManifest {
     private final DigestUtil digestUtil;
     private final ActionResult.Builder result;
     private final Path execRoot;
     private final boolean allowSymlinks;
     private final boolean uploadSymlinks;
     private final Map<Digest, Path> digestToFile = new HashMap<>();
+    private final ImmutableMap.Builder<Path, FileMetadata> files = ImmutableMap.builder();
+    private final ImmutableMap.Builder<Path, SymlinkMetadata> symlinks = ImmutableMap.builder();
+    private final ImmutableMap.Builder<Path, DirectoryMetadata> directories =
+        ImmutableMap.builder();
     private final Map<Digest, ByteString> digestToBlobs = new HashMap<>();
     private Digest stderrDigest;
     private Digest stdoutDigest;
@@ -919,6 +950,7 @@ public class RemoteCache implements AutoCloseable {
           .addOutputFileSymlinksBuilder()
           .setPath(file.relativeTo(execRoot).getPathString())
           .setTarget(target.toString());
+      symlinks.put(file, new SymlinkMetadata(file, target));
     }
 
     private void addDirectorySymbolicLink(Path file, PathFragment target) throws IOException {
@@ -926,37 +958,51 @@ public class RemoteCache implements AutoCloseable {
           .addOutputDirectorySymlinksBuilder()
           .setPath(file.relativeTo(execRoot).getPathString())
           .setTarget(target.toString());
+      symlinks.put(file, new SymlinkMetadata(file, target));
     }
 
     private void addFile(Digest digest, Path file) throws IOException {
-      result
-          .addOutputFilesBuilder()
-          .setPath(file.relativeTo(execRoot).getPathString())
-          .setDigest(digest)
-          .setIsExecutable(file.isExecutable());
+      OutputFile outputFile =
+          OutputFile.newBuilder()
+              .setPath(file.relativeTo(execRoot).getPathString())
+              .setDigest(digest)
+              .setIsExecutable(file.isExecutable())
+              .build();
+      result.addOutputFiles(outputFile);
 
       digestToFile.put(digest, file);
+      files.put(file, new FileMetadata(file, outputFile.getDigest(), outputFile.getIsExecutable()));
     }
 
     private void addDirectory(Path dir) throws ExecException, IOException {
       Tree.Builder tree = Tree.newBuilder();
-      Directory root = computeDirectory(dir, tree);
+      ImmutableList.Builder<FileMetadata> files = ImmutableList.builder();
+      ImmutableList.Builder<SymlinkMetadata> symlinks = ImmutableList.builder();
+      Directory root = computeDirectory(dir, tree, files, symlinks);
       tree.setRoot(root);
 
       ByteString data = tree.build().toByteString();
       Digest digest = digestUtil.compute(data.toByteArray());
 
       if (result != null) {
-        result
-            .addOutputDirectoriesBuilder()
-            .setPath(dir.relativeTo(execRoot).getPathString())
-            .setTreeDigest(digest);
+        OutputDirectory outputDirectory =
+            OutputDirectory.newBuilder()
+                .setPath(dir.relativeTo(execRoot).getPathString())
+                .setTreeDigest(digest)
+                .build();
+
+        result.addOutputDirectories(outputDirectory);
       }
 
       digestToBlobs.put(digest, data);
+      directories.put(dir, new DirectoryMetadata(files.build(), symlinks.build()));
     }
 
-    private Directory computeDirectory(Path path, Tree.Builder tree)
+    private Directory computeDirectory(
+        Path path,
+        Tree.Builder tree,
+        ImmutableList.Builder<FileMetadata> files,
+        ImmutableList.Builder<SymlinkMetadata> symlinks)
         throws ExecException, IOException {
       Directory.Builder b = Directory.newBuilder();
 
@@ -967,14 +1013,17 @@ public class RemoteCache implements AutoCloseable {
         String name = dirent.getName();
         Path child = path.getRelative(name);
         if (dirent.getType() == Dirent.Type.DIRECTORY) {
-          Directory dir = computeDirectory(child, tree);
+          Directory dir = computeDirectory(child, tree, files, symlinks);
           b.addDirectoriesBuilder().setName(name).setDigest(digestUtil.compute(dir));
           tree.addChildren(dir);
         } else if (dirent.getType() == Dirent.Type.SYMLINK && allowSymlinks) {
           PathFragment target = child.readSymbolicLink();
           if (uploadSymlinks && !target.isAbsolute()) {
             // Whether it is dangling or not, we're passing it on.
-            b.addSymlinksBuilder().setName(name).setTarget(target.toString());
+            SymlinkNode symlinkNode =
+                SymlinkNode.newBuilder().setName(name).setTarget(target.toString()).build();
+            b.addSymlinks(symlinkNode);
+            symlinks.add(new SymlinkMetadata(child, target));
             continue;
           }
           // Need to resolve the symbolic link now to know whether to upload a file or a directory.
@@ -986,13 +1035,17 @@ public class RemoteCache implements AutoCloseable {
           }
           if (statFollow.isFile() && !statFollow.isSpecialFile()) {
             Digest digest = digestUtil.compute(child);
-            b.addFilesBuilder()
-                .setName(name)
-                .setDigest(digest)
-                .setIsExecutable(child.isExecutable());
+            FileNode fileNode =
+                FileNode.newBuilder()
+                    .setName(name)
+                    .setDigest(digest)
+                    .setIsExecutable(child.isExecutable())
+                    .build();
+            b.addFiles(fileNode);
+            files.add(new FileMetadata(child, fileNode.getDigest(), fileNode.getIsExecutable()));
             digestToFile.put(digest, child);
           } else if (statFollow.isDirectory()) {
-            Directory dir = computeDirectory(child, tree);
+            Directory dir = computeDirectory(child, tree, files, symlinks);
             b.addDirectoriesBuilder().setName(name).setDigest(digestUtil.compute(dir));
             tree.addChildren(dir);
           } else {
@@ -1000,7 +1053,14 @@ public class RemoteCache implements AutoCloseable {
           }
         } else if (dirent.getType() == Dirent.Type.FILE) {
           Digest digest = digestUtil.compute(child);
-          b.addFilesBuilder().setName(name).setDigest(digest).setIsExecutable(child.isExecutable());
+          FileNode fileNode =
+              FileNode.newBuilder()
+                  .setName(name)
+                  .setDigest(digest)
+                  .setIsExecutable(child.isExecutable())
+                  .build();
+          b.addFiles(fileNode);
+          files.add(new FileMetadata(child, fileNode.getDigest(), fileNode.getIsExecutable()));
           digestToFile.put(digest, child);
         } else {
           illegalOutput(child);
@@ -1019,6 +1079,22 @@ public class RemoteCache implements AutoCloseable {
                   + "Change the file type or use --remote_allow_symlink_upload.",
               what.relativeTo(execRoot), kind);
       throw new UserExecException(createFailureDetail(message, Code.ILLEGAL_OUTPUT));
+    }
+
+    public ImmutableMap<Path, FileMetadata> getFileMetadata() {
+      return files.build();
+    }
+
+    public ImmutableMap<Path, SymlinkMetadata> getSymlinkMetadata() {
+      return symlinks.build();
+    }
+
+    public ImmutableMap<Path, DirectoryMetadata> getDirectoryMetadata() {
+      return directories.build();
+    }
+
+    public ActionResult getActionResult() {
+      return result.build();
     }
   }
 
