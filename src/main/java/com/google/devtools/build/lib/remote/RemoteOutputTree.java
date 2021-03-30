@@ -19,7 +19,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 public class RemoteOutputTree implements OutputTree {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
-  private static final String METADATA_SUFFIX = ".bzlmd";
+  private static final String METADATA_SUFFIX = ".bazelmetadata";
 
   private Path execRoot;
 
