@@ -160,14 +160,14 @@ public final class AsyncTaskCache<KeyT, ValueT> {
     @Override
     public void onSuccess(@NonNull ValueT value) {
       synchronized (lock) {
-        checkState(!terminated, "terminated");
+        if (!terminated) {
+          inProgress.remove(key);
+          finished.put(key, value);
+          terminated = true;
 
-        inProgress.remove(key);
-        finished.put(key, value);
-        terminated = true;
-
-        for (SingleObserver<? super ValueT> observer : ImmutableList.copyOf(observers)) {
-          observer.onSuccess(value);
+          for (SingleObserver<? super ValueT> observer : ImmutableList.copyOf(observers)) {
+            observer.onSuccess(value);
+          }
         }
       }
     }
@@ -175,13 +175,13 @@ public final class AsyncTaskCache<KeyT, ValueT> {
     @Override
     public void onError(@NonNull Throwable error) {
       synchronized (lock) {
-        checkState(!terminated, "terminated");
+        if (!terminated) {
+          inProgress.remove(key);
+          terminated = true;
 
-        inProgress.remove(key);
-        terminated = true;
-
-        for (SingleObserver<? super ValueT> observer : ImmutableList.copyOf(observers)) {
-          observer.onError(error);
+          for (SingleObserver<? super ValueT> observer : ImmutableList.copyOf(observers)) {
+            observer.onError(error);
+          }
         }
       }
     }
