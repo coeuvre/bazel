@@ -137,6 +137,7 @@ final class RemoteActionContextProvider {
               cache,
               executor,
               filesToDownload);
+      env.getEventBus().register(remoteExecutionService);
     }
 
     return remoteExecutionService;
@@ -196,7 +197,7 @@ final class RemoteActionContextProvider {
 
   public void afterCommand() {
     if (remoteExecutionService != null) {
-      remoteExecutionService.close();
+      remoteExecutionService.shutdown();
     }
   }
 }

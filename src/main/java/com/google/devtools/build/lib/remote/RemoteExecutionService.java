@@ -43,14 +43,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.common.eventbus.Subscribe;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.FileUploadEvent;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.analysis.platform.PlatformUtils;
+import com.google.devtools.build.lib.buildtool.buildevent.BuildInterruptedEvent;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
@@ -105,7 +108,7 @@ import javax.annotation.Nullable;
  * cache and execution with spawn specific types.
  */
 public class RemoteExecutionService {
-  private final AtomicBoolean closed = new AtomicBoolean(false);
+  private final AtomicBoolean shutdown = new AtomicBoolean(false);
   private final Reporter reporter;
   private final boolean verboseFailures;
   private final Path execRoot;
@@ -393,7 +396,7 @@ public class RemoteExecutionService {
   @Nullable
   public RemoteActionResult lookupCache(RemoteAction action)
       throws IOException, InterruptedException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteCache, "remoteCache can't be null");
     ActionResult actionResult =
         remoteCache.downloadActionResult(
@@ -410,7 +413,7 @@ public class RemoteExecutionService {
   @Nullable
   public InMemoryOutput downloadOutputs(RemoteAction action, RemoteActionResult result)
       throws InterruptedException, IOException, ExecException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteCache, "remoteCache can't be null");
 
     RemoteOutputsMode remoteOutputsMode = remoteOptions.remoteOutputsMode;
@@ -721,7 +724,7 @@ public class RemoteExecutionService {
   /** Upload outputs of a remote action which was executed locally to remote cache. */
   public void uploadOutputs(RemoteAction action)
       throws IOException, ExecException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteCache, "remoteCache can't be null");
     Collection<Path> outputFiles =
         action.spawn.getOutputFiles().stream()
@@ -765,7 +768,16 @@ public class RemoteExecutionService {
     Completable completable =
         Completable.concatArray(uploadOutputsCompletable, uploadActionResultCompletable);
 
-    Completable.using(remoteCache::retain, r -> completable, RemoteCache::release)
+    Completable.using(
+            () -> {
+              reporter.post(FileUploadEvent.create(false));
+              return remoteCache.retain();
+            },
+            r -> completable,
+            remoteCache -> {
+              reporter.post(FileUploadEvent.create(true));
+              remoteCache.release();
+            })
         .subscribeOn(Schedulers.io())
         .subscribe(reportUploadErrorObserver);
   }
@@ -788,7 +800,7 @@ public class RemoteExecutionService {
 
   private void reportUploadError(Throwable error) {
     if (remoteCacheInterrupted) {
-      // Ignore errors that are caused by manually interrupt
+      // If we interrupt manually, ignore cancellation errors.
       if (error instanceof CancellationException) {
         return;
       }
@@ -819,7 +831,7 @@ public class RemoteExecutionService {
    */
   public void uploadInputsIfNotPresent(RemoteAction action)
       throws IOException, InterruptedException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteCache, "remoteCache can't be null");
     checkState(remoteCache instanceof RemoteExecutionCache);
 
@@ -841,7 +853,7 @@ public class RemoteExecutionService {
   public RemoteActionResult execute(
       RemoteAction action, boolean acceptCachedResult, OperationObserver observer)
       throws IOException, InterruptedException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteExecutor, "remoteExecutor can't be null");
 
     ExecuteRequest.Builder requestBuilder =
@@ -876,7 +888,7 @@ public class RemoteExecutionService {
   /** Downloads server logs from a remotely executed action if any. */
   public ServerLogs maybeDownloadServerLogs(RemoteAction action, ExecuteResponse resp, Path logDir)
       throws InterruptedException, IOException {
-    checkState(!closed.get(), "closed");
+    checkState(!shutdown.get(), "shutdown");
     checkNotNull(remoteCache, "remoteCache can't be null");
 
     ServerLogs serverLogs = new ServerLogs();
@@ -901,20 +913,35 @@ public class RemoteExecutionService {
     return serverLogs;
   }
 
-  public void close() {
-    if (!closed.compareAndSet(false, true)) {
+  @Subscribe
+  public void buildInterrupted(BuildInterruptedEvent event) {
+    remoteCacheInterrupted = true;
+  }
+
+  /**
+   * Shuts the service down. Wait for active network I/O to finish but new requests are rejected.
+   */
+  public void shutdown() {
+    if (!shutdown.compareAndSet(false, true)) {
       return;
     }
 
     if (remoteCache != null) {
       remoteCache.release();
+
+      if (remoteCacheInterrupted) {
+        Thread.currentThread().interrupt();
+      }
+
       try {
         remoteCache.awaitTermination();
       } catch (InterruptedException e) {
         remoteCacheInterrupted = true;
-        reporter.handle(Event.warn("Upload interrupted"));
+        reporter.handle(Event.warn("remote cache interrupted"));
         remoteCache.shutdownNow();
       }
+
+      checkState(remoteCache.isClosed(), "remote cache is not closed properly.");
     }
 
     if (remoteExecutor != null) {
