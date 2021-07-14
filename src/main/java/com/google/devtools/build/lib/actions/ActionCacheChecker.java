@@ -515,7 +515,7 @@ public class ActionCacheChecker {
 
     for (Artifact input : action.getInputs().toList()) {
       entry.addInputFile(
-          input,
+          input.getExecPath(),
           getMetadataMaybe(metadataHandler, input),
           /* saveExecPath= */ !excludePathsFromActionCache.contains(input));
     }
@@ -629,7 +629,7 @@ public class ActionCacheChecker {
       entry = new ActionCache.Entry("", ImmutableMap.<String, String>of(), false);
       for (Artifact input : action.getInputs().toList()) {
         entry.addInputFile(
-            input, getMetadataMaybe(metadataHandler, input), /* saveExecPath= */ true);
+            input.getExecPath(), getMetadataMaybe(metadataHandler, input), /* saveExecPath= */ true);
       }
     }
 
