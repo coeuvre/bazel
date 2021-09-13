@@ -569,10 +569,10 @@ public class RemoteCache implements AutoCloseable {
      */
     Collections.sort(finishedDownloads, Comparator.comparing(f -> toTmpDownloadPath(f.path())));
 
-    // Move the output files from their temporary name to the actual output file name.
+    // Move the output files from their temporary name to the actual output file name. We manually
+    // change the permission here for the downloaded file to keep this behaviour consistent.
     for (FileMetadata outputFile : finishedDownloads) {
       FileSystemUtils.moveFile(toTmpDownloadPath(outputFile.path()), outputFile.path());
-      outputFile.path().setExecutable(outputFile.isExecutable());
     }
   }
 
@@ -1118,7 +1118,8 @@ public class RemoteCache implements AutoCloseable {
           .addOutputFilesBuilder()
           .setPath(remotePathResolver.localPathToOutputPath(file))
           .setDigest(digest)
-          .setIsExecutable(file.isExecutable());
+          // The permission of output file is changed to 0555 after action execution
+          .setIsExecutable(true);
 
       digestToFile.put(digest, file);
     }

@@ -156,7 +156,7 @@ public class RemoteCacheTests {
     assertThat(um.getDigestToFile()).containsExactly(digest, link);
 
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
-    expectedResult.addOutputFilesBuilder().setPath("link").setDigest(digest);
+    expectedResult.addOutputFilesBuilder().setPath("link").setDigest(digest).setIsExecutable(true);
     assertThat(result.build()).isEqualTo(expectedResult.build());
   }
 
@@ -214,7 +214,7 @@ public class RemoteCacheTests {
     assertThat(um.getDigestToFile()).containsExactly(digest, link);
 
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
-    expectedResult.addOutputFilesBuilder().setPath("link").setDigest(digest);
+    expectedResult.addOutputFilesBuilder().setPath("link").setDigest(digest).setIsExecutable(true);
     assertThat(result.build()).isEqualTo(expectedResult.build());
   }
 
@@ -1456,7 +1456,7 @@ public class RemoteCacheTests {
     // assert
     assertThat(digestUtil.compute(execRoot.getRelative("a/foo"))).isEqualTo(fooDigest);
     assertThat(digestUtil.compute(execRoot.getRelative("a/bar/qux"))).isEqualTo(quxDigest);
-    assertThat(execRoot.getRelative("a/bar/qux").isExecutable()).isTrue();
+    assertThat(execRoot.getRelative("a/bar/qux").isExecutable()).isFalse();
   }
 
   @Test
@@ -1639,7 +1639,7 @@ public class RemoteCacheTests {
 
     // assert
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
-    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest).setIsExecutable(true);
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result).isEqualTo(expectedResult.build());
 

@@ -400,7 +400,7 @@ public class GrpcCacheClientTest {
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("b/empty"))).isEqualTo(emptyDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/bar"))).isEqualTo(barDigest);
-    assertThat(execRoot.getRelative("a/bar").isExecutable()).isTrue();
+    assertThat(execRoot.getRelative("a/bar").isExecutable()).isFalse();
   }
 
   @Test
@@ -430,7 +430,7 @@ public class GrpcCacheClientTest {
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("b/empty"))).isEqualTo(emptyDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/bar"))).isEqualTo(barDigest);
-    assertThat(execRoot.getRelative("a/bar").isExecutable()).isTrue();
+    assertThat(execRoot.getRelative("a/bar").isExecutable()).isFalse();
   }
 
   @Test
@@ -472,7 +472,7 @@ public class GrpcCacheClientTest {
 
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/foo"))).isEqualTo(fooDigest);
     assertThat(DIGEST_UTIL.compute(execRoot.getRelative("a/bar/qux"))).isEqualTo(quxDigest);
-    assertThat(execRoot.getRelative("a/bar/qux").isExecutable()).isTrue();
+    assertThat(execRoot.getRelative("a/bar/qux").isExecutable()).isFalse();
   }
 
   @Test
@@ -652,7 +652,7 @@ public class GrpcCacheClientTest {
 
     ActionResult result = uploadDirectory(remoteCache, ImmutableList.<Path>of(fooFile, barDir));
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
-    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest).setIsExecutable(true);
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result).isEqualTo(expectedResult.build());
   }
@@ -899,7 +899,7 @@ public class GrpcCacheClientTest {
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.setStdoutDigest(stdoutDigest);
     expectedResult.setStderrDigest(stderrDigest);
-    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest).setIsExecutable(true);
     expectedResult
         .addOutputFilesBuilder()
         .setPath("bar")
@@ -960,7 +960,7 @@ public class GrpcCacheClientTest {
             ImmutableList.of(fooFile, barFile),
             outErr);
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
-    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest).setIsExecutable(true);
     expectedResult
         .addOutputFilesBuilder()
         .setPath("bar")
@@ -1010,9 +1010,9 @@ public class GrpcCacheClientTest {
           }
         });
     ActionResult.Builder rb = ActionResult.newBuilder();
-    rb.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
+    rb.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest).setIsExecutable(true);
     rb.addOutputFilesBuilder().setPath("bar").setDigest(barDigest).setIsExecutable(true);
-    rb.addOutputFilesBuilder().setPath("baz").setDigest(bazDigest);
+    rb.addOutputFilesBuilder().setPath("baz").setDigest(bazDigest).setIsExecutable(true);
     ActionResult result = rb.build();
     serviceRegistry.addService(
         new ActionCacheImplBase() {
