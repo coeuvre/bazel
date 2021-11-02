@@ -209,7 +209,11 @@ public class RxFutures {
 
           @Override
           public void onError(Throwable e) {
-            future.setException(e);
+            if (e instanceof CancellationException) {
+              future.cancel(true);
+            } else {
+              future.setException(e);
+            }
           }
         });
     return future;
@@ -237,7 +241,11 @@ public class RxFutures {
 
           @Override
           public void onError(Throwable e) {
-            future.setException(e);
+            if (e instanceof  CancellationException) {
+              future.cancel(true);
+            } else {
+              future.setException(e);
+            }
           }
         });
     return future;

@@ -83,8 +83,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   private final RemoteRetrier retrier;
   private final ByteStreamUploader uploader;
   private final int maxMissingBlobsDigestsPerMessage;
-
-  private AtomicBoolean closed = new AtomicBoolean();
+  private final AtomicBoolean closed = new AtomicBoolean();
 
   @VisibleForTesting
   public GrpcCacheClient(
@@ -92,17 +91,23 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
       CallCredentialsProvider callCredentialsProvider,
       RemoteOptions options,
       RemoteRetrier retrier,
-      DigestUtil digestUtil,
-      ByteStreamUploader uploader) {
+      DigestUtil digestUtil) {
     this.callCredentialsProvider = callCredentialsProvider;
     this.channel = channel;
     this.options = options;
     this.digestUtil = digestUtil;
     this.retrier = retrier;
-    this.uploader = uploader;
     maxMissingBlobsDigestsPerMessage = computeMaxMissingBlobsDigestsPerMessage();
     Preconditions.checkState(
         maxMissingBlobsDigestsPerMessage > 0, "Error: gRPC message size too small.");
+
+    this.uploader =
+        new ByteStreamUploader(
+            options.remoteInstanceName,
+            channel,
+            callCredentialsProvider,
+            options.remoteTimeout.getSeconds(),
+            retrier);
   }
 
   private int computeMaxMissingBlobsDigestsPerMessage() {
@@ -154,7 +159,6 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
     if (closed.getAndSet(true)) {
       return;
     }
-    uploader.release();
     channel.release();
   }
 
@@ -421,8 +425,7 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
         Chunker.builder()
             .setInput(digest.getSizeBytes(), path)
             .setCompressed(options.cacheCompression)
-            .build(),
-        /* forceUpload= */ true);
+            .build());
   }
 
   @Override
@@ -434,7 +437,6 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
         Chunker.builder()
             .setInput(data.toByteArray())
             .setCompressed(options.cacheCompression)
-            .build(),
-        /* forceUpload= */ true);
+            .build());
   }
 }

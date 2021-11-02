@@ -15,11 +15,13 @@ package com.google.devtools.build.lib.remote.util;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.devtools.build.lib.remote.util.RxFutures.toCompletable;
+import static com.google.devtools.build.lib.remote.util.RxFutures.toListenableFuture;
 
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.CompletableEmitter;
@@ -42,12 +44,12 @@ public class RxFuturesTest {
     SettableFuture<Void> future = SettableFuture.create();
     AtomicBoolean executed = new AtomicBoolean(false);
 
-    RxFutures.toCompletable(
+    toCompletable(
         () -> {
           executed.set(true);
           return future;
         },
-        MoreExecutors.directExecutor());
+        directExecutor());
 
     assertThat(executed.get()).isFalse();
   }
@@ -55,7 +57,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_futureOnSuccess_completableOnComplete() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     TestObserver<Void> observer = completable.test();
     observer.assertEmpty();
@@ -67,7 +69,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_futureOnError_completableOnError() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     TestObserver<Void> observer = completable.test();
     observer.assertEmpty();
@@ -80,7 +82,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_futureOnSuccessBeforeSubscription_completableOnComplete() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     future.set(null);
     TestObserver<Void> observer = completable.test();
@@ -91,7 +93,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_futureOnErrorBeforeSubscription_completableOnError() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     Throwable error = new IllegalStateException("error");
     future.setException(error);
@@ -103,7 +105,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_futureCancelledBeforeSubscription_completableOnError() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     future.cancel(true);
     TestObserver<Void> observer = completable.test();
@@ -112,9 +114,21 @@ public class RxFuturesTest {
   }
 
   @Test
+  public void toCompletable_futureCancelled_completableOnError() {
+    ListenableFuture<Void> future = SettableFuture.create();
+    Completable completable = toCompletable(() -> future, directExecutor());
+
+    TestObserver<Void> observer = completable.test();
+    observer.assertNotComplete();
+    future.cancel(true);
+
+    observer.assertError(CancellationException.class);
+  }
+
+  @Test
   public void toCompletable_disposeCompletable_cancelFuture() {
     SettableFuture<Void> future = SettableFuture.create();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
 
     TestObserver<Void> observer = completable.test();
     observer.assertEmpty();
@@ -126,7 +140,7 @@ public class RxFuturesTest {
   @Test
   public void toCompletable_multipleSubscriptions_error() {
     ListenableFuture<Void> future = immediateVoidFuture();
-    Completable completable = RxFutures.toCompletable(() -> future, MoreExecutors.directExecutor());
+    Completable completable = toCompletable(() -> future, directExecutor());
     completable.test().assertComplete();
 
     TestObserver<Void> observer = completable.test();
@@ -175,6 +189,16 @@ public class RxFuturesTest {
     assertThat(setup.isDisposed()).isTrue();
   }
 
+  @Test
+  public void toListenableFutureFromCompletable_sourceFutureCancelled_cancelFuture() {
+    SettableFuture<Void> source = SettableFuture.create();
+    ListenableFuture<Void> future = toListenableFuture(toCompletable(() -> source, directExecutor()));
+
+    source.cancel(true);
+
+    assertThat(future.isCancelled()).isTrue();
+  }
+
   private static class CompletableToListenableFutureSetup {
     public static CompletableToListenableFutureSetup create() {
       return new CompletableToListenableFutureSetup();
@@ -190,7 +214,7 @@ public class RxFuturesTest {
     CompletableToListenableFutureSetup() {
       Completable completable =
           Completable.create(emitter -> this.emitter = emitter).doOnDispose(() -> disposed = true);
-      future = RxFutures.toListenableFuture(completable);
+      future = toListenableFuture(completable);
       Futures.addCallback(
           future,
           new FutureCallback<Void>() {
@@ -204,7 +228,7 @@ public class RxFuturesTest {
               failure = t;
             }
           },
-          MoreExecutors.directExecutor());
+          directExecutor());
     }
 
     public CompletableEmitter getEmitter() {
