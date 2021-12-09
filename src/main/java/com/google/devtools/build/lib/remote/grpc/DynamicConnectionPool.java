@@ -56,6 +56,14 @@ public class DynamicConnectionPool implements ConnectionPool {
     return closed.get();
   }
 
+  public synchronized int numAvailableConnections() {
+    int total = 0;
+    for (SharedConnectionFactory factory : factories) {
+      total += factory.numAvailableConnections();
+    }
+    return total;
+  }
+
   @Override
   public void close() throws IOException {
     if (closed.compareAndSet(false, true)) {

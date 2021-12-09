@@ -19,6 +19,28 @@ public class RxClientCalls {
   private RxClientCalls() {}
 
   /**
+   * Returns a {@link Single} which will initiate the client unary gRPC call on subscription and
+   * emit either a response message from server or an error.
+   *
+   * <p>The {@link Single} is *cold* which means no request will be made until subscription. A
+   * re-subscription triggers a new call.
+   *
+   * <p>When the {@link Single} is disposed and the underlying RPC hasn't terminated, {@link
+   * ClientCall#cancel(String, Throwable)} will be called.
+   *
+   * @param clientCallSingle a {@link Single} which will return the {@link ClientCall} on
+   *     subscription.
+   * @param requestSingle a {@link Single} which will return the request message of type {@link
+   *     ReqT} on subscription.
+   * @param <ReqT> type of message sent one or more times to the server.
+   * @param <RespT> type of message received one or more times from the server.
+   */
+  public static <ReqT, RespT> Single<RespT> unaryCall(
+      Single<ClientCall<ReqT, RespT>> clientCallSingle, Single<ReqT> requestSingle) {
+    return clientStreamingCall(clientCallSingle, Flowable.fromSingle(requestSingle));
+  }
+
+  /**
    * Returns a {@link Single} which will initiate the client streaming gRPC call on subscription and
    * emit either a response message from server or an error.
    *

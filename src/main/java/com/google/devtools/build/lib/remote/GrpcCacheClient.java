@@ -51,6 +51,7 @@ import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestOutputStream;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.remote.zstd.ZstdDecompressingOutputStream;
@@ -419,24 +420,26 @@ public class GrpcCacheClient implements RemoteCacheClient, MissingDigestsFinder 
   @Override
   public ListenableFuture<Void> uploadFile(
       RemoteActionExecutionContext context, Digest digest, Path path) {
-    return uploader.uploadBlobAsync(
-        context,
-        digest,
-        Chunker.builder()
-            .setInput(digest.getSizeBytes(), path)
-            .setCompressed(options.cacheCompression)
-            .build());
+    return RxFutures.toListenableFuture(
+        uploader.upload(
+            context,
+            digest,
+            Chunker.builder()
+                .setInput(digest.getSizeBytes(), path)
+                .setCompressed(options.cacheCompression)
+                .build()));
   }
 
   @Override
   public ListenableFuture<Void> uploadBlob(
       RemoteActionExecutionContext context, Digest digest, ByteString data) {
-    return uploader.uploadBlobAsync(
-        context,
-        digest,
-        Chunker.builder()
-            .setInput(data.toByteArray())
-            .setCompressed(options.cacheCompression)
-            .build());
+    return RxFutures.toListenableFuture(
+        uploader.upload(
+            context,
+            digest,
+            Chunker.builder()
+                .setInput(data.toByteArray())
+                .setCompressed(options.cacheCompression)
+                .build()));
   }
 }

@@ -75,6 +75,10 @@ public class ReferenceCountedChannel extends Channel implements ReferenceCounted
     return dynamicConnectionPool.isClosed();
   }
 
+  public DynamicConnectionPool getConnectionPool() {
+    return dynamicConnectionPool;
+  }
+
   /** A {@link ClientCall} which call {@link SharedConnection#close()} after the RPC is closed. */
   static class ConnectionCleanupCall<ReqT, RespT>
       extends ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT> {
@@ -131,6 +135,7 @@ public class ReferenceCountedChannel extends Channel implements ReferenceCounted
   }
 
   private SharedConnection acquireSharedConnection() throws IOException, InterruptedException {
+    System.out.println("numAvailableConnections: " + dynamicConnectionPool.numAvailableConnections());
     try {
       SharedConnection sharedConnection = dynamicConnectionPool.create().blockingGet();
       ChannelConnection connection = (ChannelConnection) sharedConnection.getUnderlyingConnection();
