@@ -72,8 +72,8 @@ index 09fcad95a2..9b737e5deb 100644
  def grpc_extra_deps(ignore_version_differences = False):
      """Loads the extra dependencies.
 @@ -43,20 +38,3 @@
-     protobuf_deps()
- 
+-    protobuf_deps()
+-
      upb_deps()
 -
 -    api_dependencies()

@@ -119,25 +119,3 @@ index ee6ddeaf1..ebc1800ae 100644
  
  filegroup(
      name = "release",
-diff --git a/protobuf_deps.bzl b/protobuf_deps.bzl
-index 32f38ebb6..11bb4b613 100644
---- a/protobuf_deps.bzl
-+++ b/protobuf_deps.bzl
-@@ -66,10 +66,10 @@ def protobuf_deps():
-             urls = ["https://github.com/bazelbuild/rules_python/releases/download/0.1.0/rules_python-0.1.0.tar.gz"],
-         )
- 
--    if not native.existing_rule("rules_jvm_external"):
--        http_archive(
--            name = "rules_jvm_external",
--            sha256 = "f36441aa876c4f6427bfb2d1f2d723b48e9d930b62662bf723ddfb8fc80f0140",
--            strip_prefix = "rules_jvm_external-4.1",
--            urls = ["https://github.com/bazelbuild/rules_jvm_external/archive/4.1.zip"],
--        )
-+    # if not native.existing_rule("rules_jvm_external"):
-+    #     http_archive(
-+    #         name = "rules_jvm_external",
-+    #         sha256 = "f36441aa876c4f6427bfb2d1f2d723b48e9d930b62662bf723ddfb8fc80f0140",
-+    #         strip_prefix = "rules_jvm_external-4.1",
-+    #         urls = ["https://github.com/bazelbuild/rules_jvm_external/archive/4.1.zip"],
-+    #     )
