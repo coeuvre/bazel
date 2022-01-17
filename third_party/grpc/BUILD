@@ -19,8 +19,6 @@ load("//tools/distributions:distribution_rules.bzl", "distrib_cc_binary", "distr
 licenses(["notice"])  # Apache v2
 
 exports_files([
-    "grpc_1.31.1.patch",
-    "grpc_1.41.0.patch",
     "grpc_1.43.0.patch",
 ])
 
@@ -36,14 +34,14 @@ filegroup(
 distrib_jar_filegroup(
     name = "bootstrap-grpc-jars",
     srcs = [
-        "grpc-api-1.41.0.jar",
-        "grpc-auth-1.41.0.jar",
-        "grpc-context-1.41.0.jar",
-        "grpc-core-1.41.0.jar",
-        "grpc-netty-1.41.0.jar",
-        "grpc-protobuf-1.41.0.jar",
-        "grpc-protobuf-lite-1.41.0.jar",
-        "grpc-stub-1.41.0.jar",
+        "grpc-api-1.43.2.jar",
+        "grpc-auth-1.43.2.jar",
+        "grpc-context-1.43.2.jar",
+        "grpc-core-1.43.2.jar",
+        "grpc-netty-1.43.2.jar",
+        "grpc-protobuf-1.43.2.jar",
+        "grpc-protobuf-lite-1.43.2.jar",
+        "grpc-stub-1.43.2.jar",
     ],
     enable_distributions = ["debian"],
 )
