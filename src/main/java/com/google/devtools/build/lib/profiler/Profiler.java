@@ -137,7 +137,7 @@ public final class Profiler {
    */
   @ThreadCompatible
   private static class TaskData {
-    final long threadId;
+    long threadId;
     final long startTimeNanos;
     final int id;
     final ProfilerTask type;
@@ -177,6 +177,10 @@ public final class Profiler {
     @Override
     public String toString() {
       return "Thread " + threadId + ", task " + id + ", type " + type + ", " + description;
+    }
+
+    public void setThreadId(long threadId) {
+      this.threadId = threadId;
     }
   }
 
@@ -651,14 +655,50 @@ public final class Profiler {
     logEventAtTime(clock.nanoTime(), type, description);
   }
 
-  private SilentCloseable reallyProfile(ProfilerTask type, String description) {
+  private ActiveProfileTask reallyProfile(ProfilerTask type, String description) {
     // ProfilerInfo.allTasksById is supposed to be an id -> Task map, but it is in fact a List,
     // which means that we cannot drop tasks to which we had already assigned ids. Therefore,
     // non-leaf tasks must not have a minimum duration. However, we don't quite consistently
     // enforce this, and Blaze only works because we happen not to add child tasks to those parent
     // tasks that have a minimum duration.
     TaskData taskData = new TaskData(taskId.incrementAndGet(), clock.nanoTime(), type, description);
-    return () -> completeTask(taskData);
+    return new ActiveProfileTask(taskData);
+  }
+
+  public static class ActiveProfileTask implements SilentCloseable {
+    @Nullable private final TaskData taskData;
+
+    public ActiveProfileTask(@Nullable TaskData taskData) {
+      this.taskData = taskData;
+    }
+
+    public void setThreadId(long threadId) {
+      if (taskData != null) {
+        taskData.setThreadId(threadId);
+      }
+    }
+
+    @Override
+    public void close() {
+      if (taskData != null) {
+        Profiler.instance().completeTask(taskData);
+      }
+    }
+  }
+
+  public void defineThread(long threadId, String name, String sortIndex) {
+    FileWriter writer = writerRef.get();
+
+    TaskData threadNameTask =
+        new TaskData(/* id= */ 0, /* startTimeNanos= */ -1, ProfilerTask.THREAD_NAME, name);
+    threadNameTask.setThreadId(threadId);
+    writer.enqueue(threadNameTask);
+
+    TaskData threadSortIndexTask =
+        new TaskData(
+            /* id= */ 0, /* startTimeNanos= */ -1, ProfilerTask.THREAD_SORT_INDEX, sortIndex);
+    threadSortIndexTask.setThreadId(threadId);
+    writer.enqueue(threadSortIndexTask);
   }
 
   /**
@@ -680,7 +720,7 @@ public final class Profiler {
    * @param type predefined task type - see ProfilerTask for available types.
    * @param description task description. May be stored until the end of the build.
    */
-  public SilentCloseable profile(ProfilerTask type, String description) {
+  public ActiveProfileTask profile(ProfilerTask type, String description) {
     Preconditions.checkNotNull(description);
     return (isActive() && isProfiling(type)) ? reallyProfile(type, description) : NOP;
   }
@@ -751,7 +791,7 @@ public final class Profiler {
     return profileAction(type, null, description, primaryOutput, targetLabel);
   }
 
-  private static final SilentCloseable NOP = () -> {};
+  private static final ActiveProfileTask NOP = new ActiveProfileTask(null);
 
   private boolean countAction(ProfilerTask type, TaskData taskData) {
     return type == ProfilerTask.ACTION

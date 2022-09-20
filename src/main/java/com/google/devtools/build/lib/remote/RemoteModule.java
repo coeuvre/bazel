@@ -370,6 +370,7 @@ public final class RemoteModule extends BlazeModule {
     if (enableRemoteExecution) {
       ImmutableList.Builder<ClientInterceptor> interceptors = ImmutableList.builder();
       interceptors.add(TracingMetadataUtils.newExecHeadersInterceptor(remoteOptions));
+      interceptors.add(new GrpcProfilingInterceptor());
       if (loggingInterceptor != null) {
         interceptors.add(loggingInterceptor);
       }
@@ -394,6 +395,7 @@ public final class RemoteModule extends BlazeModule {
     if (cacheChannel == null) {
       ImmutableList.Builder<ClientInterceptor> interceptors = ImmutableList.builder();
       interceptors.add(TracingMetadataUtils.newCacheHeadersInterceptor(remoteOptions));
+      interceptors.add(new GrpcProfilingInterceptor());
       if (loggingInterceptor != null) {
         interceptors.add(loggingInterceptor);
       }
