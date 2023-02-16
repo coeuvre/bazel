@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.actions.FileContentsProxy;
 import com.google.devtools.build.lib.actions.FileStateType;
 import com.google.devtools.build.lib.actions.HasDigest;
 import com.google.devtools.build.lib.actions.cache.MetadataDigestUtils;
+import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.util.Fingerprint;
@@ -46,11 +47,14 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.annotation.Nullable;
 
 /**
@@ -528,6 +532,49 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
       if (type == Dirent.Type.DIRECTORY) {
         visitTree(parentDir, parentRelativePath, visitor);
       }
+    }
+  }
+
+
+  public static void visitTreeInParallel(Path parentDir, TreeArtifactVisitor visitor) throws IOException {
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      visitTreeInParallel(executor, parentDir, PathFragment.EMPTY_FRAGMENT, checkNotNull(visitor));
+    }
+  }
+
+  private static void visitTreeInParallel(ExecutorService executor, Path parentDir, PathFragment subdir, TreeArtifactVisitor visitor)
+      throws IOException {
+    Collection<Dirent> dir;
+
+    try (var s = Profiler.instance().profile("readdir")) {
+      dir = parentDir.getRelative(subdir).readdir(Symlinks.NOFOLLOW);
+    }
+
+    for (Dirent dirent : dir) {
+      executor.submit(() -> {
+        try {
+          PathFragment parentRelativePath = subdir.getChild(dirent.getName());
+          Dirent.Type type = dirent.getType();
+
+          if (type == Dirent.Type.UNKNOWN) {
+            throw new IOException(
+                "Could not determine type of file for " + parentRelativePath + " under " + parentDir);
+          }
+
+          if (type == Dirent.Type.SYMLINK) {
+            checkSymlink(subdir, parentDir.getRelative(parentRelativePath));
+          }
+
+          visitor.visit(parentRelativePath, type);
+
+
+          if (type == Dirent.Type.DIRECTORY) {
+            visitTreeInParallel(executor, parentDir, parentRelativePath, visitor);
+          }
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
+      });
     }
   }
 

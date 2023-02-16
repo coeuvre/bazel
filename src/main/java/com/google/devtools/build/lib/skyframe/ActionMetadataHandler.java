@@ -348,7 +348,7 @@ final class ActionMetadataHandler implements MetadataHandler {
 
     TreeArtifactValue.Builder tree = TreeArtifactValue.newBuilder(parent);
 
-    TreeArtifactValue.visitTree(
+    TreeArtifactValue.visitTreeInParallel(
         treeDir,
         (parentRelativePath, type) -> {
           if (chmod && type != Dirent.Type.SYMLINK) {
@@ -370,7 +370,9 @@ final class ActionMetadataHandler implements MetadataHandler {
             throw new IOException(errorMessage, e);
           }
 
-          tree.putChild(child, metadata);
+          synchronized (tree) {
+            tree.putChild(child, metadata);
+          }
         });
 
     if (archivedTreeArtifactsEnabled) {

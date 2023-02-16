@@ -658,3 +658,15 @@ maven_install(
 load("@maven_android//:defs.bzl", pinned_maven_install_android = "pinned_maven_install")
 
 pinned_maven_install_android()
+
+load("@bazel_tools//tools/jdk:remote_java_repository.bzl", "remote_java_repository")
+
+remote_java_repository(
+    name = "zulu19",
+    prefix = "zulujdk",
+    sha256 = "622de3d817384dabbffafb7de34d4640adfe7f6719588112075f6a9081dcb9ac",
+    strip_prefix = "zulu19.32.13-ca-jdk19.0.2-macosx_x64",
+    target_compatible_with = ["@platforms//os:macos"],
+    urls = ["https://cdn.azul.com/zulu/bin/zulu19.32.13-ca-jdk19.0.2-macosx_x64.zip"],
+    version = "19",
+)

@@ -37,16 +37,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.annotation.Nullable;
 
 /** This class implements the FileSystem interface using direct calls to the UNIX filesystem. */
 @ThreadSafe
 public class UnixFileSystem extends AbstractFileSystemWithCustomStat {
   protected final String hashAttributeName;
+  protected final ExecutorService executorService;
 
   public UnixFileSystem(DigestHashFunction hashFunction, String hashAttributeName) {
     super(hashFunction);
     this.hashAttributeName = hashAttributeName;
+    this.executorService = Executors.newFixedThreadPool(100);
   }
 
   public static Dirent.Type getDirentFromMode(int mode) {
@@ -449,7 +454,25 @@ public class UnixFileSystem extends AbstractFileSystemWithCustomStat {
     String name = path.toString();
     long startTime = Profiler.nanoTimeMaybe();
     try {
-      return super.getDigest(path);
+      if (Thread.currentThread().isVirtual()) {
+        var future = executorService.submit(() -> super.getDigest(path));
+        try {
+          return future.get();
+        } catch (InterruptedException e) {
+          throw new RuntimeException(e);
+        } catch (ExecutionException e) {
+          var cause = e.getCause();
+          if (cause != null) {
+            if (cause instanceof IOException) {
+              throw (IOException) cause;
+            }
+            throw new RuntimeException(cause);
+          }
+          throw new RuntimeException(e);
+        }
+      } else {
+        return super.getDigest(path);
+      }
     } finally {
       profiler.logSimpleTask(startTime, ProfilerTask.VFS_MD5, name);
     }

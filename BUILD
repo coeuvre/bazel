@@ -260,3 +260,21 @@ REMOTE_PLATFORMS = ("rbe_ubuntu1804_java11",)
     )
     for platform_name in REMOTE_PLATFORMS
 ]
+
+load(
+    "@bazel_tools//tools/jdk:default_java_toolchain.bzl",
+    "BASE_JDK9_JVM_OPTS",
+    "DEFAULT_JAVACOPTS",
+    "DEFAULT_TOOLCHAIN_CONFIGURATION",
+    "default_java_toolchain",
+)
+
+default_java_toolchain(
+    name = "zulu19_java_toolchain",
+    configuration = DEFAULT_TOOLCHAIN_CONFIGURATION,
+    java_runtime = "@zulu19//:jdk",
+    javacopts = DEFAULT_JAVACOPTS + ["--enable-preview"],
+    jvm_opts = BASE_JDK9_JVM_OPTS + ["--enable-preview"],
+    source_version = "19",
+    target_version = "19",
+)
