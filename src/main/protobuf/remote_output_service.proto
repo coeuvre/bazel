@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package remote_output_service;
+
+option java_package = "com.google.devtools.build.lib.remote";
+option java_outer_classname = "RemoteOutputServiceProto";
+option go_package = "remoteoutputservice";
+
+// The Remote Output Service may be used by users of the Remote
+// Execution API to construct a directory on the local system that
+// contains all output files of a build.
+//
+// Primitive implementations of this API may simply download files from
+// the Content Addressable Storage (CAS) and store them at their
+// designated location. Complex implementations may use a pseudo file
+// system (e.g., FUSE) to support deduplication, lazy loading and
+// snapshotting.
+//
+// Details:
+// https://github.com/bazelbuild/proposals/blob/master/designs/2021-02-09-remote-output-service.md
+// https://groups.google.com/g/remote-execution-apis/c/qOSWWwBLPzo
+// https://groups.google.com/g/bazel-dev/c/lKzENsNd1Do
+service RemoteOutputService {
+  // Signal that a new build is about to start.
+  //
+  // The client uses this call to obtain a directory where outputs of
+  // the build may be stored, called the output path. Based on the
+  // parameters provided, the remote output service may provide an empty
+  // output path, or one that has contents from a previous build of the
+  // same workspace.
+  //
+  // In case the output path contains data from a previous build, the
+  // remote output service is responsible for calling
+  // ContentAddressableStorage.FindMissingBlobs() for all of the objects
+  // that are stored remotely. This ensures that these objects don't
+  // disappear from the Content Addressable Storage while the build is
+  // running. Any files that are absent must be removed from the output
+  // path and reported through InitialOutputPathContents.modified_paths.
+  rpc StartBuild(StartBuildRequest) returns (StartBuildResponse);
+}
+
+message StartBuildRequest {
+  // The absolute path at which the remote output service exposes its
+  // output paths, as seen from the perspective of the client.
+  //
+  // This value needs to be provided by the client, because file system
+  // namespace virtualization may cause this directory to appear at a
+  // location that differs from the one used by the service.
+  //
+  // The purpose of this field is to ensure that the remote output
+  // service is capable of expanding symbolic links containing absolute
+  // paths.
+  string output_path_prefix = 1;
+
+  // A client-chosen value that uniquely identifies this build. This
+  // value must be provided to most other methods to ensure that
+  // operations are targeted against the right output path.
+  string build_id = 2;
+}
+
+message InitialOutputPathContents {
+  // The identifier of a previously finalized build whose results are
+  // stored in the output path.
+  string build_id = 1;
+
+  // Paths that have been modified or removed since the build finalized.
+  //
+  // If the remote output service freezes the contents of the output
+  // path between builds, this field can be left empty.
+  repeated string modified_paths = 2;
+}
+
+message StartBuildResponse {
+  InitialOutputPathContents initial_output_path_contents = 1;
+}

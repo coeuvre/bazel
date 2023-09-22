@@ -252,6 +252,28 @@ java_library_srcs(
 )
 
 proto_library(
+    name = "remote_output_service_proto",
+    srcs = ["remote_output_service.proto"],
+    deps = [],
+)
+
+java_proto_library(
+    name = "remote_output_service_java_proto",
+    deps = [":remote_output_service_proto"],
+)
+
+cc_proto_library(
+    name = "remote_output_service_cc_proto",
+    deps = [":remote_output_service_proto"],
+)
+
+cc_grpc_library(
+    name = "remote_output_service_cc_grpc",
+    srcs = [":remote_output_service_proto"],
+    deps = [":remote_output_service_cc_proto"],
+)
+
+proto_library(
     name = "spawn_proto",
     srcs = ["spawn.proto"],
     deps = [
