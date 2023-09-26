@@ -15,7 +15,10 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.hash.Hashing.md5;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -34,6 +37,11 @@ import com.google.devtools.build.lib.actions.cache.MetadataInjector;
 import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionPhaseCompleteEvent;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceGrpc.RemoteOutputServiceBlockingStub;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
+import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.Execution;
 import com.google.devtools.build.lib.server.FailureDetails.Execution.Code;
@@ -48,9 +56,12 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
@@ -58,14 +69,33 @@ import javax.annotation.Nullable;
 public class RemoteOutputService implements OutputService {
 
   private final CommandEnvironment env;
+  private final ExecutorService executorService;
+  @Nullable private final ManagedChannel channel;
 
   @Nullable private RemoteOutputChecker remoteOutputChecker;
   @Nullable private RemoteActionInputFetcher actionInputFetcher;
   @Nullable private LeaseService leaseService;
   @Nullable private Supplier<InputMetadataProvider> fileCacheSupplier;
 
-  public RemoteOutputService(CommandEnvironment env) {
+  private final String workspaceId;
+
+  public RemoteOutputService(CommandEnvironment env, ExecutorService executorService) {
     this.env = checkNotNull(env);
+    this.executorService = checkNotNull(executorService);
+
+    var remoteOptions = env.getOptions().getOptions(RemoteOptions.class);
+
+    this.workspaceId =
+        DigestUtil.hashCodeToString(
+            md5().hashString(checkNotNull(env.getWorkspace()).toString(), UTF_8));
+
+    // TODO: channel pools
+    if (!Strings.isNullOrEmpty(remoteOptions.remoteOutputService)) {
+      this.channel =
+          ManagedChannelBuilder.forTarget(remoteOptions.remoteOutputService).usePlaintext().build();
+    } else {
+      this.channel = null;
+    }
   }
 
   void setRemoteOutputChecker(RemoteOutputChecker remoteOutputChecker) {
@@ -127,6 +157,10 @@ public class RemoteOutputService implements OutputService {
     return "remoteActionFS";
   }
 
+  private RemoteOutputServiceBlockingStub newBlockingStub() {
+    return RemoteOutputServiceGrpc.newBlockingStub(channel);
+  }
+
   @Override
   public ModifiedFileSet startBuild(
       EventHandler eventHandler, UUID buildId, boolean finalizeActions) throws AbruptExitException {
@@ -150,6 +184,26 @@ public class RemoteOutputService implements OutputService {
             e);
       }
     }
+
+    if (channel != null) {
+      var stub = newBlockingStub();
+      var request =
+          StartBuildRequest.newBuilder()
+              .setWorkspaceId(workspaceId)
+              .setBuildId(buildId.toString())
+              .setOutputPath(outputPath.toString())
+              .build();
+      // TODO(chiwang): Handle gRPC error
+      var response = stub.startBuild(request);
+      if (response.hasInitialOutputPathContents()) {
+        var modifiedFileSet = ModifiedFileSet.builder();
+        for (var modifiedPath : response.getInitialOutputPathContents().getModifiedPathsList()) {
+          modifiedFileSet.modify(PathFragment.create(modifiedPath));
+        }
+        return modifiedFileSet.build();
+      }
+    }
+
     return ModifiedFileSet.EVERYTHING_MODIFIED;
   }
 
@@ -218,7 +272,12 @@ public class RemoteOutputService implements OutputService {
 
   @Override
   public void clean() {
-    // Intentionally left empty.
+    if (channel != null) {
+      var stub = newBlockingStub();
+      var request = CleanRequest.newBuilder().setWorkspaceId(workspaceId).build();
+      // TODO(chiwang): Handle gRPC error
+      stub.clean(request);
+    }
   }
 
   @Override

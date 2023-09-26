@@ -254,12 +254,20 @@ java_library_srcs(
 proto_library(
     name = "remote_output_service_proto",
     srcs = ["remote_output_service.proto"],
-    deps = [],
+    deps = [
+        "@com_google_protobuf//:empty_proto",
+    ],
 )
 
 java_proto_library(
     name = "remote_output_service_java_proto",
     deps = [":remote_output_service_proto"],
+)
+
+java_grpc_library(
+    name = "remote_output_service_java_grpc",
+    srcs = [":remote_output_service_proto"],
+    deps = [":remote_output_service_java_proto"],
 )
 
 cc_proto_library(

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package remote_output_service;
 
+import "google/protobuf/empty.proto";
+
 option java_package = "com.google.devtools.build.lib.remote";
 option java_outer_classname = "RemoteOutputServiceProto";
 option go_package = "remoteoutputservice";
@@ -21,6 +23,14 @@ option go_package = "remoteoutputservice";
 // https://groups.google.com/g/remote-execution-apis/c/qOSWWwBLPzo
 // https://groups.google.com/g/bazel-dev/c/lKzENsNd1Do
 service RemoteOutputService {
+  // Methods that can be invoked at any point in time.
+
+  // Clean all data associated with a single output path, so that the
+  // next invocation of StartBuild() yields an empty output path. This
+  // may be implemented in a way that's faster than removing all of the
+  // files from the file system manually.
+  rpc Clean(CleanRequest) returns (google.protobuf.Empty);
+
   // Signal that a new build is about to start.
   //
   // The client uses this call to obtain a directory where outputs of
@@ -39,7 +49,37 @@ service RemoteOutputService {
   rpc StartBuild(StartBuildRequest) returns (StartBuildResponse);
 }
 
+message CleanRequest {
+  // The output base identifier that was provided to
+  // StartBuildRequest.workspace_id whose data needs to be removed.
+  string workspace_id = 1;
+}
+
 message StartBuildRequest {
+  // A client-chosen value that uniquely identifies the workspace for
+  // which the build is being started.  This value must be set to ensure
+  // that the remote output service is capable of managing builds for
+  // distinct workspaces concurrently.
+  //
+  // This value must be a valid filename for the operating system on
+  // which the remote output service and client are being executed. This
+  // allows the remote output service to create one subdirectory per
+  // project that needs to be built.
+  //
+  // By default, Bazel sets this value to the MD5 sum of the absolute
+  // path of the workspace directory. This is generally sufficient,
+  // though a more complex scheme may necessary in case the file system
+  // namespace is virtualized.
+  //
+  // Starting a build finalizes any previous build with the same
+  // output_base_id that has not been finalized yet.
+  string workspace_id = 1;
+
+  // A client-chosen value that uniquely identifies this build. This
+  // value must be provided to most other methods to ensure that
+  // operations are targeted against the right output path.
+  string build_id = 2;
+
   // The absolute path at which the remote output service exposes its
   // output paths, as seen from the perspective of the client.
   //
@@ -50,26 +90,28 @@ message StartBuildRequest {
   // The purpose of this field is to ensure that the remote output
   // service is capable of expanding symbolic links containing absolute
   // paths.
-  string output_path_prefix = 1;
+  string output_path = 3;
 
-  // A client-chosen value that uniquely identifies this build. This
-  // value must be provided to most other methods to ensure that
-  // operations are targeted against the right output path.
-  string build_id = 2;
+  // TODO(chiwang): fields for RBE authentication?
 }
 
 message InitialOutputPathContents {
-  // The identifier of a previously finalized build whose results are
-  // stored in the output path.
-  string build_id = 1;
-
   // Paths that have been modified or removed since the build finalized.
   //
   // If the remote output service freezes the contents of the output
   // path between builds, this field can be left empty.
-  repeated string modified_paths = 2;
+  repeated string modified_paths = 1;
 }
 
 message StartBuildResponse {
+  // If set, the contents of the output path are almost entirely
+  // identical on the results of a previous build. This information may
+  // be used by the client to prevent unnecessary scanning of the file
+  // system.
+  //
+  // Servers can leave this field unset in case the contents of the
+  // output path are empty, not based on a previous build, if no
+  // tracking of this information is performed, or if the number of
+  // changes made to the output path is too large to be expressed.
   InitialOutputPathContents initial_output_path_contents = 1;
 }

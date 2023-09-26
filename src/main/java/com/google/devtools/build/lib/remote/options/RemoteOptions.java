@@ -464,6 +464,15 @@ public final class RemoteOptions extends CommonRemoteOptions {
   }
 
   @Option(
+      name = "remote_output_service",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      help = ""
+  )
+  public String remoteOutputService;
+
+  @Option(
       name = "remote_download_minimal",
       oldName = "experimental_remote_download_minimal",
       defaultValue = "null",
