@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.remote;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.hash.Hashing.md5;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -38,6 +39,9 @@ import com.google.devtools.build.lib.actions.cache.OutputMetadataStore;
 import com.google.devtools.build.lib.buildtool.buildevent.ExecutionPhaseCompleteEvent;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceGrpc.RemoteOutputServiceBlockingStub;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.File;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.Symlink;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
@@ -72,16 +76,21 @@ public class RemoteOutputService implements OutputService {
   private final ExecutorService executorService;
   @Nullable private final ManagedChannel channel;
 
-  @Nullable private RemoteOutputChecker remoteOutputChecker;
+  private final RemoteOutputChecker remoteOutputChecker;
   @Nullable private RemoteActionInputFetcher actionInputFetcher;
   @Nullable private LeaseService leaseService;
   @Nullable private Supplier<InputMetadataProvider> fileCacheSupplier;
 
   private final String workspaceId;
+  @Nullable private String buildId;
 
-  public RemoteOutputService(CommandEnvironment env, ExecutorService executorService) {
+  public RemoteOutputService(
+      CommandEnvironment env,
+      ExecutorService executorService,
+      RemoteOutputChecker remoteOutputChecker) {
     this.env = checkNotNull(env);
     this.executorService = checkNotNull(executorService);
+    this.remoteOutputChecker = remoteOutputChecker;
 
     var remoteOptions = env.getOptions().getOptions(RemoteOptions.class);
 
@@ -96,10 +105,6 @@ public class RemoteOutputService implements OutputService {
     } else {
       this.channel = null;
     }
-  }
-
-  void setRemoteOutputChecker(RemoteOutputChecker remoteOutputChecker) {
-    this.remoteOutputChecker = remoteOutputChecker;
   }
 
   void setActionInputFetcher(RemoteActionInputFetcher actionInputFetcher) {
@@ -185,12 +190,13 @@ public class RemoteOutputService implements OutputService {
       }
     }
 
+    this.buildId = buildId.toString();
     if (channel != null) {
       var stub = newBlockingStub();
       var request =
           StartBuildRequest.newBuilder()
               .setWorkspaceId(workspaceId)
-              .setBuildId(buildId.toString())
+              .setBuildId(this.buildId)
               .setOutputPath(outputPath.toString())
               .build();
       // TODO(chiwang): Handle gRPC error
@@ -304,5 +310,27 @@ public class RemoteOutputService implements OutputService {
             fileCacheSupplier.get(),
             actionInputFetcher);
     return ArtifactPathResolver.createPathResolver(remoteFileSystem, fileSystem.getPath(execRoot));
+  }
+
+  public RemoteOutputChecker getRemoteOutputChecker() {
+    return remoteOutputChecker;
+  }
+
+  public boolean hasOutputServiceDaemon() {
+    return channel != null;
+  }
+
+  public void batchCreate(Iterable<File> files, Iterable<Symlink> symlinks) throws IOException {
+    checkState(channel != null);
+
+    var request =
+        BatchCreateRequest.newBuilder()
+            .setBuildId(buildId)
+            .addAllFiles(files)
+            .addAllSymlinks(symlinks)
+            .build();
+
+    var response = newBlockingStub().batchCreate(request);
+    // TODO(chiwang): Handle gRPC error
   }
 }

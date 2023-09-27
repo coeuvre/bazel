@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package remote_output_service;
 
+import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/empty.proto";
 
 option java_package = "com.google.devtools.build.lib.remote";
@@ -47,6 +48,10 @@ service RemoteOutputService {
   // running. Any files that are absent must be removed from the output
   // path and reported through InitialOutputPathContents.modified_paths.
   rpc StartBuild(StartBuildRequest) returns (StartBuildResponse);
+
+  // Create one or more files, directories or symbolic links in the
+  // output path.
+  rpc BatchCreate(BatchCreateRequest) returns (google.protobuf.Empty);
 }
 
 message CleanRequest {
@@ -56,6 +61,11 @@ message CleanRequest {
 }
 
 message StartBuildRequest {
+  // A client-chosen value that uniquely identifies this build. This
+  // value must be provided to most other methods to ensure that
+  // operations are targeted against the right output path.
+  string build_id = 1;
+
   // A client-chosen value that uniquely identifies the workspace for
   // which the build is being started.  This value must be set to ensure
   // that the remote output service is capable of managing builds for
@@ -73,12 +83,7 @@ message StartBuildRequest {
   //
   // Starting a build finalizes any previous build with the same
   // output_base_id that has not been finalized yet.
-  string workspace_id = 1;
-
-  // A client-chosen value that uniquely identifies this build. This
-  // value must be provided to most other methods to ensure that
-  // operations are targeted against the right output path.
-  string build_id = 2;
+  string workspace_id = 2;
 
   // The absolute path at which the remote output service exposes its
   // output paths, as seen from the perspective of the client.
@@ -114,4 +119,61 @@ message StartBuildResponse {
   // tracking of this information is performed, or if the number of
   // changes made to the output path is too large to be expressed.
   InitialOutputPathContents initial_output_path_contents = 1;
+}
+
+message BatchCreateRequest {
+  message File {
+    string path = 1;
+    int32 mode = 2;
+    build.bazel.remote.execution.v2.Digest digest = 3;
+  }
+
+  message Directory {
+    string path = 1;
+    int32 mode = 2;
+  }
+
+  message Symlink {
+    string path = 1;
+    string target_path = 2;
+  }
+
+  // The identifier of the build. The remote output service uses this to
+  // determine which output path needs to be modified.
+  string build_id = 1;
+
+  // Files that need to be downloaded from the Content Addressable
+  // Storage.
+  //
+  // Any missing parent directories, including those in path_prefix, are
+  // created as well. If any of the parents refer to a non-directory
+  // file, they are replaced by an empty directory. If a file or
+  // directory already exists at the provided path, it is replaced.
+  //
+  // This means that symbolic links are not followed when evaluating
+  // path_prefix and OutputFile.path.
+  repeated File files = 2;
+
+  // Symbolic links that need to be created.
+  //
+  // Any missing parent directories, including those in path_prefix, are
+  // created as well. If any of the parents refer to a non-directory
+  // file, they are replaced by an empty directory. If a file or
+  // directory already exists at the provided path, it is replaced.
+  //
+  // This means that symbolic links are not followed when evaluating
+  // path_prefix and OutputSymlink.path.
+  repeated Symlink symlinks = 3;
+
+  // Directories that need to be downloaded from the Content Addressable
+  // Storage.
+  //
+  // Any missing parent directories, including those in path_prefix, are
+  // created as well. If any of the parents refer to a non-directory
+  // file, they are replaced by an empty directory. Any file or
+  // directory that already exists at the provided path is replaced.
+  //
+  // This means that symbolic links are not followed when evaluating
+  // path_prefix and OutputDirectory.path.
+  repeated Directory directories = 4;
 }

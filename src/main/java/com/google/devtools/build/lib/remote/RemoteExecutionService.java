@@ -87,6 +87,7 @@ import com.google.devtools.build.lib.remote.RemoteExecutionService.ActionResultM
 import com.google.devtools.build.lib.remote.RemoteExecutionService.ActionResultMetadata.FileMetadata;
 import com.google.devtools.build.lib.remote.RemoteExecutionService.ActionResultMetadata.SymlinkMetadata;
 import com.google.devtools.build.lib.remote.Scrubber.SpawnScrubber;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest;
 import com.google.devtools.build.lib.remote.common.BulkTransferException;
 import com.google.devtools.build.lib.remote.common.OperationObserver;
 import com.google.devtools.build.lib.remote.common.OutputDigestMismatchException;
@@ -184,7 +185,7 @@ public class RemoteExecutionService {
   private final AtomicBoolean shutdown = new AtomicBoolean(false);
   private final AtomicBoolean buildInterrupted = new AtomicBoolean(false);
 
-  @Nullable private final RemoteOutputChecker remoteOutputChecker;
+  private final RemoteOutputService remoteOutputService;
 
   @Nullable private final Scrubber scrubber;
 
@@ -202,7 +203,7 @@ public class RemoteExecutionService {
       @Nullable RemoteExecutionClient remoteExecutor,
       TempPathGenerator tempPathGenerator,
       @Nullable Path captureCorruptedOutputsDir,
-      @Nullable RemoteOutputChecker remoteOutputChecker) {
+      RemoteOutputService remoteOutputService) {
     this.reporter = reporter;
     this.verboseFailures = verboseFailures;
     this.execRoot = execRoot;
@@ -226,7 +227,7 @@ public class RemoteExecutionService {
     this.captureCorruptedOutputsDir = captureCorruptedOutputsDir;
 
     this.scheduler = Schedulers.from(executor, /* interruptibleWorker= */ true);
-    this.remoteOutputChecker = remoteOutputChecker;
+    this.remoteOutputService = checkNotNull(remoteOutputService);
   }
 
   private Command buildCommand(
@@ -842,28 +843,6 @@ public class RemoteExecutionService {
     }
   }
 
-  /**
-   * Copies moves the downloaded outputs from their download location to their declared location.
-   */
-  private void moveOutputsToFinalLocation(
-      List<ListenableFuture<FileMetadata>> downloads, Map<Path, Path> realToTmpPath)
-      throws IOException, InterruptedException {
-    List<FileMetadata> finishedDownloads = new ArrayList<>(downloads.size());
-    for (ListenableFuture<FileMetadata> finishedDownload : downloads) {
-      FileMetadata outputFile = getFromFuture(finishedDownload);
-      if (outputFile != null) {
-        finishedDownloads.add(outputFile);
-      }
-    }
-    // Move the output files from their temporary name to the actual output file name. Executable
-    // bit is ignored since the file permission will be changed to 0555 after execution.
-    for (FileMetadata outputFile : finishedDownloads) {
-      Path realPath = outputFile.path();
-      Path tmpPath = Preconditions.checkNotNull(realToTmpPath.get(realPath));
-      realPath.getParentDirectory().createDirectoryAndParents();
-      FileSystemUtils.moveFile(tmpPath, realPath);
-    }
-  }
 
   private void createSymlinks(Iterable<SymlinkMetadata> symlinks) throws IOException {
     for (SymlinkMetadata symlink : symlinks) {
@@ -1155,9 +1134,12 @@ public class RemoteExecutionService {
       if (!isInMemoryOutputFile && shouldDownload(result, execPath)) {
         Path tmpPath = tempPathGenerator.generateTempPath();
         realToTmpPath.put(file.path, tmpPath);
-        downloadsBuilder.add(
-            downloadFile(
-                context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
+        if (remoteOutputService.hasOutputServiceDaemon()) {
+          downloadsBuilder.add(immediateFuture(file));
+        } else {
+          downloadsBuilder.add(downloadFile(
+              context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
+        }
       } else {
         remoteActionFileSystem.injectRemoteFile(
             file.path().asFragment(),
@@ -1187,9 +1169,12 @@ public class RemoteExecutionService {
         if (shouldDownload(result, file.path.relativeTo(execRoot))) {
           Path tmpPath = tempPathGenerator.generateTempPath();
           realToTmpPath.put(file.path, tmpPath);
-          downloadsBuilder.add(
-              downloadFile(
-                  context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
+          if (remoteOutputService.hasOutputServiceDaemon()) {
+            downloadsBuilder.add(immediateFuture(file));
+          } else {
+            downloadsBuilder.add(downloadFile(
+                context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
+          }
         } else {
           remoteActionFileSystem.injectRemoteFile(
               file.path().asFragment(),
@@ -1232,7 +1217,25 @@ public class RemoteExecutionService {
     tmpOutErr.clearOut();
     tmpOutErr.clearErr();
 
-    moveOutputsToFinalLocation(downloads, realToTmpPath);
+    // Copies moves the downloaded outputs from their download location to their declared location.
+    List<FileMetadata> finishedDownloads = new ArrayList<>(downloads.size());
+    for (ListenableFuture<FileMetadata> finishedDownload : downloads) {
+      FileMetadata outputFile = getFromFuture(finishedDownload);
+      if (outputFile != null) {
+        finishedDownloads.add(outputFile);
+      }
+    }
+
+    if (!remoteOutputService.hasOutputServiceDaemon()) {
+      // Move the output files from their temporary name to the actual output file name. Executable
+      // bit is ignored since the file permission will be changed to 0555 after execution.
+      for (FileMetadata outputFile : finishedDownloads) {
+        Path realPath = outputFile.path();
+        Path tmpPath = Preconditions.checkNotNull(realToTmpPath.get(realPath));
+        realPath.getParentDirectory().createDirectoryAndParents();
+        FileSystemUtils.moveFile(tmpPath, realPath);
+      }
+    }
 
     List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
     for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
@@ -1244,9 +1247,13 @@ public class RemoteExecutionService {
     Iterable<SymlinkMetadata> symlinks =
         Iterables.concat(metadata.symlinks(), symlinksInDirectories);
 
-    // Create the symbolic links after all downloads are finished, because dangling symlinks
-    // might not be supported on all platforms.
-    createSymlinks(symlinks);
+    if (!remoteOutputService.hasOutputServiceDaemon()) {
+      // Create the symbolic links after all downloads are finished, because dangling symlinks
+      // might not be supported on all platforms.
+      createSymlinks(symlinks);
+    } else {
+      batchCreate(finishedDownloads, symlinks);
+    }
 
     if (result.success()) {
       // Check that all mandatory outputs are created.
@@ -1288,13 +1295,39 @@ public class RemoteExecutionService {
     return null;
   }
 
+  private void batchCreate(List<FileMetadata> files, Iterable<SymlinkMetadata> symlinks)
+      throws IOException {
+    remoteOutputService.batchCreate(
+        Iterables.transform(
+            files,
+            fileMetadata -> BatchCreateRequest.File.newBuilder()
+                .setPath(canonicalPath(fileMetadata.path().asFragment()))
+                .setMode(0755)
+                .setDigest(fileMetadata.digest())
+                .build()),
+        Iterables.transform(
+            symlinks,
+            symlinkMetadata -> BatchCreateRequest.Symlink.newBuilder()
+                .setPath(canonicalPath(symlinkMetadata.path().asFragment()))
+                .setTargetPath(canonicalPath(symlinkMetadata.target()))
+                .build()));
+  }
+
+  private String canonicalPath(PathFragment path) {
+    if (!path.isAbsolute()) {
+      return path.toString();
+    }
+    var outputPath = execRoot.getRelative("bazel-out").asFragment();
+    return path.relativeTo(outputPath).toString();
+  }
+
   private boolean shouldDownload(RemoteActionResult result, PathFragment execPath) {
     // In case the action failed, download all outputs. It might be helpful for debugging and there
     // is no point in injecting output metadata of a failed action.
     if (result.getExitCode() != 0) {
       return true;
     }
-    return remoteOutputChecker.shouldDownloadOutput(execPath);
+    return remoteOutputService.getRemoteOutputChecker().shouldDownloadOutput(execPath);
   }
 
   private static String prettyPrint(ActionInput actionInput) {
