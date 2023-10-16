@@ -1,6 +1,12 @@
 cc_binary(
     name = "output_service",
-    srcs = ["main.cc"],
+    srcs = [
+        "copy.cc",
+        "copy.h",
+        "fuse.cc",
+        "fuse.h",
+        "main.cc",
+    ],
     deps = [
         "//src/main/protobuf:remote_output_service_cc_grpc",
         "//third_party/grpc:grpc++_unsecure",

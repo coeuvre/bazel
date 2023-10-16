@@ -1,0 +1,81 @@
+package(default_visibility = ["//visibility:public"])
+
+genrule(
+    name = "config",
+    srcs = [],
+    outs = ["config.h"],
+    cmd = """
+        cat > $@ << EOF
+#pragma once
+
+#undef HAVE_COPY_FILE_RANGE
+
+#define HAVE_FALLOCATE
+
+#define HAVE_FDATASYNC
+
+#if !defined(HAVE_FORK)
+#define HAVE_FORK
+#elif HAVE_FORK == 0
+#undef HAVE_FORK
+#endif
+
+#define HAVE_FSTATAT
+
+#define HAVE_ICONV
+
+#define HAVE_OPENAT
+
+#define HAVE_PIPE2
+
+#define HAVE_POSIX_FALLOCATE
+
+#define HAVE_READLINKAT
+
+#define HAVE_SETXATTR
+
+#define HAVE_SPLICE
+
+#define HAVE_STRUCT_STAT_ST_ATIM
+
+#undef HAVE_STRUCT_STAT_ST_ATIMESPEC
+
+#define HAVE_UTIMENSAT
+
+#define HAVE_VMSPLICE
+
+#define PACKAGE_VERSION "3.10.4"
+EOF
+    """,
+)
+
+cc_library(
+    name = "libfuse",
+    srcs = glob([
+        "lib/*.c",
+        "lib/*.h",
+    ], exclude = [
+        "lib/mount_bsd.c",
+    ]) + [":config"],
+    hdrs = glob(["include/*.h"]),
+    includes = [
+        "include",
+        "lib",
+    ],
+    include_prefix = "third_party/fuse",
+    defines = [
+        "_FILE_OFFSET_BITS=64",
+        "FUSE_USE_VERSION=312",
+        "FUSERMOUNT_DIR=\\\"/usr/bin\\\"",
+    ],
+    copts = [
+        "-D_REENTRANT",
+    ],
+    strip_include_prefix = "include",
+    linkopts = [
+        "-lrt",
+        "-ldl",
+    ],
+    linkstatic = 1,
+)
+
