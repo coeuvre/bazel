@@ -54,13 +54,14 @@ cc_library(
     srcs = glob([
         "lib/*.c",
         "lib/*.h",
+        "lib/modules/*.c",
     ], exclude = [
         "lib/mount_bsd.c",
     ]) + [":config"],
     hdrs = glob(["include/*.h"]),
     includes = [
         "include",
-        "lib",
+        ".",
     ],
     include_prefix = "third_party/fuse",
     defines = [

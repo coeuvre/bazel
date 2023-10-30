@@ -17,7 +17,7 @@ ABSL_FLAG(std::string, disk_cache, "", "Location of the disk cache");
 static void RunServer(uint16_t port, std::string disk_cache) {
   std::string server_address = absl::StrFormat("0.0.0.0:%d", port);
 
-  CopyRemoteOutputService service(disk_cache);
+  FuseRemoteOutputService service(disk_cache);
 
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;

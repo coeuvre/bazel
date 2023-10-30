@@ -82,7 +82,7 @@ message StartBuildRequest {
   // namespace is virtualized.
   //
   // Starting a build finalizes any previous build with the same
-  // output_base_id that has not been finalized yet.
+  // workspace_id that has not been finalized yet.
   string workspace_id = 2;
 
   // The absolute path at which the remote output service exposes its
