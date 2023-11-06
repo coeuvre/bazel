@@ -3,6 +3,8 @@
 #include <semaphore.h>
 #include <sys/stat.h>
 
+#include <memory>
+
 #include "third_party/fuse/fuse.h"
 
 struct FuseThreadParam {
@@ -11,7 +13,13 @@ struct FuseThreadParam {
   bool has_init_error;
 };
 
-static void *fuse_thread_main(void *arg) {
+static void *InitError(FuseThreadParam *param) {
+  param->has_init_error = true;
+  sem_post(&param->init_sem);
+  return nullptr;
+}
+
+static void *FuseThreadMain(void *arg) {
   FuseThreadParam *param = (FuseThreadParam *)arg;
   Workspace *workspace = param->workspace;
 
@@ -20,21 +28,22 @@ static void *fuse_thread_main(void *arg) {
   struct stat st;
   if (stat(workspace->mount_point.c_str(), &st) != -1) {
     std::cerr << "Mountpoint is not free" << std::endl;
-    param->has_init_error = true;
+    return InitError(param);
   }
 
   if (errno != ENOENT) {
     std::cerr << "Invalid mountpoint: " << strerror(errno) << std::endl;
-    param->has_init_error = true;
+    return InitError(param);
   }
 
-  if (!param->has_init_error) {
-    mkdir(workspace->mount_point.c_str(), 0755);
+  if (mkdir(workspace->mount_point.c_str(), 0755) != 0) {
+    std::cerr << "Failed to mkdir at " << workspace->mount_point << std::endl;
+    return InitError(param);
+  }
 
-    if (fuse_mount(workspace->fuse, workspace->mount_point.c_str()) != 0) {
-      std::cerr << "Failed to mount fuse" << std::endl;
-      param->has_init_error = true;
-    }
+  if (fuse_mount(workspace->fuse, workspace->mount_point.c_str()) != 0) {
+    std::cerr << "Failed to mount fuse" << std::endl;
+    return InitError(param);
   }
 
   sem_post(&param->init_sem);
@@ -60,17 +69,161 @@ static Build InvalidBuild() {
   return build;
 }
 
+struct Node;
+
+enum NodeType {
+  kFile,
+  kDirectory,
+};
+
+struct FileNode {};
+
+struct DirectoryNode {
+  std::map<std::string, Node *> children;
+};
+
+struct Node {
+  NodeType type;
+  union {
+    FileNode file;
+    DirectoryNode dir;
+  };
+};
+
+struct FileSystem {
+  Node root;
+};
+
+static void *FuseInit(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+  FileSystem *fs = (FileSystem *)malloc(sizeof(FileSystem));
+  fs->root.type = kDirectory;
+  fs->root.dir = {};
+  return fs;
+}
+
+static int GetChild(Node *node, const char *name, int count, Node **out_child) {
+  if (node->type != kDirectory) {
+    return -ENOTDIR;
+  }
+
+  std::string key(name, count);
+  auto iter = node->dir.children.find(key);
+  if (iter == node->dir.children.end()) {
+    return -ENOENT;
+  }
+
+  *out_child = iter->second;
+  return 0;
+}
+
+static const char *LocateFirstChar(const char *str, int count, char ch) {
+  for (int i = 0; i < count; ++i) {
+    if (str[i] == ch) {
+      return str + i;
+    }
+  }
+  return nullptr;
+}
+
+static const char *LocateLastChar(const char *str, int count, char ch) {
+  for (int i = count - 1; i >= 0; --i) {
+    if (str[i] == ch) {
+      return str + i;
+    }
+  }
+  return nullptr;
+}
+
+static int GetNode(FileSystem *fs, const char *path, int count,
+                   Node **out_node) {
+  if (count <= 0 || path[0] != '/') {
+    return -EBADF;
+  }
+
+  const char *end = path + count;
+
+  path += 1;
+  Node *node = &fs->root;
+
+  while (true) {
+    const char *s = LocateFirstChar(path, end - path, '/');
+    if (s == nullptr) {
+      break;
+    }
+
+    int ret = GetChild(node, path, s - path, &node);
+    if (ret != 0) {
+      return ret;
+    }
+
+    path = s + 1;
+  }
+
+  if (path < end) {
+    return GetChild(node, path, end - path, out_node);
+  }
+
+  *out_node = node;
+  return 0;
+}
+
+static int FuseGetattr(const char *path, struct stat *stbuf,
+                       struct fuse_file_info *fi) {
+  return -ENOENT;
+}
+
+static int FuseMkdir(const char *path, mode_t mode) {
+  fuse_context *ctx = fuse_get_context();
+
+  int count = strlen(path);
+  const char *end = path + count;
+  const char *s = LocateLastChar(path, count, '/');
+  if (s == nullptr) {
+    return -EBADF;
+  }
+
+  FileSystem *fs = (FileSystem *)ctx->private_data;
+  Node *parent;
+  int ret = GetNode(fs, path, s == path ? 1 : s - path, &parent);
+  if (ret != 0) {
+    return ret;
+  }
+
+  Node *child;
+  const char *name = s + 1;
+  int name_count = end - name;
+  ret = GetChild(parent, name, name_count, &child);
+  if (ret == 0) {
+    return -EEXIST;
+  } else if (ret != -ENOENT) {
+    return ret;
+  }
+
+  child = (Node *)malloc(sizeof(Node));
+  child->type = kDirectory;
+  child->dir = {};
+  auto key = std::string(name, name_count);
+  parent->dir.children[key] = child;
+
+  return 0;
+}
+
 static Workspace InitWorkspace(const std::string &workspace_id) {
   Workspace workspace = {
       .valid = true,
       .workspace_id = workspace_id,
   };
 
-  fuse_operations op = {};
+  fuse_operations op = {
+      .getattr = FuseGetattr,
+      .mkdir = FuseMkdir,
+      .init = FuseInit,
+  };
   const char *argv[] = {
       "",
+      "-d",  // enable fuse debug
   };
-  fuse_args args = FUSE_ARGS_INIT(1, (char **)argv);
+  fuse_args args = FUSE_ARGS_INIT(sizeof(argv) / sizeof(*argv), (char **)argv);
   std::cerr << "Creating FUSE ..." << std::endl;
   workspace.fuse = fuse_new(&args, &op, sizeof(op), nullptr);
   if (workspace.fuse == nullptr) {
@@ -100,26 +253,23 @@ static Build StartBuild(Workspace *workspace, const std::string &build_id,
     workspace->mount_point = output_path;
 
     // Start a new fuse thread
-    FuseThreadParam *param = new FuseThreadParam{
+    auto param = std::unique_ptr<FuseThreadParam>(new FuseThreadParam{
         .workspace = workspace,
-    };
+    });
 
     if (sem_init(&param->init_sem, 0, 0) != 0) {
       std::cerr << "Failed to init semaphore" << std::endl;
       return InvalidBuild();
     }
 
-    if (pthread_create(&workspace->fuse_thread, nullptr, fuse_thread_main,
-                       param) != 0) {
+    if (pthread_create(&workspace->fuse_thread, nullptr, FuseThreadMain,
+                       param.get()) != 0) {
       std::cerr << "Failed to create new thread" << std::endl;
       return InvalidBuild();
     }
 
     sem_wait(&param->init_sem);
-    bool has_init_error = param->has_init_error;
-    delete param;
-
-    if (has_init_error) {
+    if (param->has_init_error) {
       workspace->mount_point = "";
       return InvalidBuild();
     }
