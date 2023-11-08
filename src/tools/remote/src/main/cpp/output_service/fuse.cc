@@ -7,6 +7,13 @@
 
 #include "third_party/fuse/fuse.h"
 
+#define ASSERT(a) \
+  do {            \
+    if (!(a)) {   \
+      abort();    \
+    }             \
+  } while (0)
+
 struct FuseThreadParam {
   Workspace *workspace;
   sem_t init_sem;
@@ -36,6 +43,8 @@ static void *FuseThreadMain(void *arg) {
     return InitError(param);
   }
 
+  // TODO: In an incremental buidl, the output path might not be clean. How do
+  // we handle that case? Delete the dir?
   if (mkdir(workspace->mount_point.c_str(), 0755) != 0) {
     std::cerr << "Failed to mkdir at " << workspace->mount_point << std::endl;
     return InitError(param);
@@ -76,7 +85,11 @@ enum NodeType {
   kDirectory,
 };
 
-struct FileNode {};
+struct FileNode {
+  off_t size;
+  char *buf;
+  off_t cap;
+};
 
 struct DirectoryNode {
   std::map<std::string, Node *> children;
@@ -88,6 +101,7 @@ struct Node {
     FileNode file;
     DirectoryNode dir;
   };
+  timespec mtime;
 };
 
 struct FileSystem {
@@ -112,99 +126,371 @@ static int GetChild(Node *node, const char *name, int count, Node **out_child) {
     return -ENOENT;
   }
 
-  *out_child = iter->second;
+  if (out_child) {
+    *out_child = iter->second;
+  }
+
   return 0;
 }
 
-static const char *LocateFirstChar(const char *str, int count, char ch) {
-  for (int i = 0; i < count; ++i) {
-    if (str[i] == ch) {
-      return str + i;
-    }
-  }
-  return nullptr;
-}
-
-static const char *LocateLastChar(const char *str, int count, char ch) {
-  for (int i = count - 1; i >= 0; --i) {
-    if (str[i] == ch) {
-      return str + i;
-    }
-  }
-  return nullptr;
-}
-
-static int GetNode(FileSystem *fs, const char *path, int count,
-                   Node **out_node) {
-  if (count <= 0 || path[0] != '/') {
+// Returns 0 if parent dir exists or path is '/'.
+//   Only use *out_parent and *out_node if returned 0.
+static int GetNode(FileSystem *fs, const char *path, Node **out_parent,
+                   Node **out_node, const char **out_node_name = nullptr) {
+  if (path[0] != '/') {
     return -EBADF;
   }
 
-  const char *end = path + count;
+  int ret = 0;
+  const char *end = path + strlen(path);
 
-  path += 1;
   Node *node = &fs->root;
-
+  path += 1;
   while (true) {
-    const char *s = LocateFirstChar(path, end - path, '/');
+    const char *s = strchr(path, '/');
     if (s == nullptr) {
       break;
     }
 
-    int ret = GetChild(node, path, s - path, &node);
-    if (ret != 0) {
-      return ret;
+    if (ret == 0) {
+      Node *child = nullptr;
+      ret = GetChild(node, path, s - path, &child);
+      node = child;
     }
 
     path = s + 1;
   }
 
-  if (path < end) {
-    return GetChild(node, path, end - path, out_node);
+  if (ret == 0) {
+    if (path < end) {
+      if (out_parent) {
+        *out_parent = node;
+      }
+      ret = GetChild(node, path, end - path, out_node);
+      if (ret == -ENOENT) {
+        if (out_node) {
+          *out_node = nullptr;
+        }
+        ret = 0;
+      }
+      if (out_node_name) {
+        *out_node_name = path;
+      }
+    } else {
+      // path is '/'
+      if (out_parent) {
+        *out_parent = nullptr;
+      }
+      if (out_node) {
+        *out_node = node;
+      }
+      if (out_node_name) {
+        *out_node_name = end - 1;
+      }
+    }
   }
 
-  *out_node = node;
+  return ret;
+}
+
+static FileSystem *GetFileSystem() {
+  fuse_context *ctx = fuse_get_context();
+  FileSystem *fs = (FileSystem *)ctx->private_data;
+  return fs;
+}
+
+Node *CreateNode(Node *parent, const char *name, NodeType type) {
+  Node *child = (Node *)malloc(sizeof(Node));
+  child->type = type;
+  auto key = std::string(name);
+  parent->dir.children[key] = child;
+  clock_gettime(CLOCK_REALTIME, &child->mtime);
+  return child;
+}
+
+Node *CreateDirectory(Node *parent, const char *name) {
+  Node *child = CreateNode(parent, name, kDirectory);
+  child->dir = {};
+  return child;
+}
+
+Node *CreateFile(Node *parent, const char *name) {
+  Node *child = CreateNode(parent, name, kFile);
+  child->file.size = 0;
+  child->file.buf = nullptr;
+  child->file.cap = 0;
+  return child;
+}
+
+void TruncateFile(Node *node) {
+  ASSERT(node->type == kFile);
+  node->file.size = 0;
+  clock_gettime(CLOCK_REALTIME, &node->mtime);
+}
+
+int WriteFile(Node *node, const char *buf, size_t size, off_t offset) {
+  ASSERT(node->type == kFile);
+
+  FileNode *file = &node->file;
+  off_t end = offset + size;
+
+  if (end > file->cap) {
+    file->buf = (char *)realloc(file->buf, end);
+    ASSERT(file->buf);
+    file->cap = end;
+  }
+
+  if (end > file->size) {
+    file->size = end;
+  }
+
+  memcpy(file->buf + offset, buf, size);
+
+  clock_gettime(CLOCK_REALTIME, &node->mtime);
+
+  return size;
+}
+
+int ReadFile(Node *node, char *buf, size_t size, off_t offset) {
+  ASSERT(node->type == kFile);
+
+  FileNode *file = &node->file;
+
+  off_t end = offset + size;
+  if (end > file->size) {
+    end = file->size;
+  }
+  size = end - offset;
+
+  memcpy(buf, file->buf + offset, size);
+
+  return size;
+}
+
+static int FuseAccess(const char *path, int mask) {
+  FileSystem *fs = GetFileSystem();
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
   return 0;
 }
 
 static int FuseGetattr(const char *path, struct stat *stbuf,
                        struct fuse_file_info *fi) {
-  return -ENOENT;
-}
+  // TODO: handle fi?
 
-static int FuseMkdir(const char *path, mode_t mode) {
-  fuse_context *ctx = fuse_get_context();
+  FileSystem *fs = GetFileSystem();
 
-  int count = strlen(path);
-  const char *end = path + count;
-  const char *s = LocateLastChar(path, count, '/');
-  if (s == nullptr) {
-    return -EBADF;
-  }
-
-  FileSystem *fs = (FileSystem *)ctx->private_data;
-  Node *parent;
-  int ret = GetNode(fs, path, s == path ? 1 : s - path, &parent);
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
   if (ret != 0) {
     return ret;
   }
-
-  Node *child;
-  const char *name = s + 1;
-  int name_count = end - name;
-  ret = GetChild(parent, name, name_count, &child);
-  if (ret == 0) {
-    return -EEXIST;
-  } else if (ret != -ENOENT) {
-    return ret;
+  if (node == nullptr) {
+    return -ENOENT;
   }
 
-  child = (Node *)malloc(sizeof(Node));
-  child->type = kDirectory;
-  child->dir = {};
-  auto key = std::string(name, name_count);
-  parent->dir.children[key] = child;
+  switch (node->type) {
+    case kFile: {
+      stbuf->st_mode = S_IFREG | 0777;
+      stbuf->st_nlink = 1;
+      stbuf->st_uid = 0;
+      stbuf->st_gid = 0;
+      stbuf->st_size = node->file.size;
+      stbuf->st_blksize = 4096;
+      stbuf->st_blocks = node->file.size / 512 + ((node->file.size % 512) != 0);
+      stbuf->st_atim = node->mtime;
+      stbuf->st_mtim = node->mtime;
+      stbuf->st_ctim = node->mtime;
+    } break;
 
+    case kDirectory: {
+      stbuf->st_mode = S_IFDIR | 0777;
+      stbuf->st_nlink = 1;
+      stbuf->st_uid = 0;
+      stbuf->st_gid = 0;
+      stbuf->st_size = 1;
+      stbuf->st_blksize = 1;
+      stbuf->st_blocks = 1;
+      stbuf->st_atim = node->mtime;
+      stbuf->st_mtim = node->mtime;
+      stbuf->st_ctim = node->mtime;
+    } break;
+
+    default: {
+      return -ENOSYS;
+    } break;
+  }
+
+  return 0;
+}
+
+static int FuseGetxattr(const char *path, const char *name, char *value,
+                        size_t size) {
+  FileSystem *fs = GetFileSystem();
+
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+
+  return 0;
+}
+
+static int FuseOpen(const char *path, struct fuse_file_info *fi) {
+  if ((fi->flags & O_APPEND) != 0) {
+    std::cerr << "TODO: Handle O_APPEND" << std::endl;
+    return -ENOSYS;
+  }
+
+  FileSystem *fs = GetFileSystem();
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (parent == nullptr) {
+    return -ENOTDIR;
+  }
+
+  if (node == nullptr) {
+    if ((fi->flags & O_CREAT) == 0) {
+      return -ENOENT;
+    }
+    node = CreateFile(parent, name);
+  } else {
+    if (node->type != kFile) {
+      return -EBADF;
+    }
+
+    if (fi->flags & O_TRUNC) {
+      TruncateFile(node);
+    }
+  }
+
+  fi->fh = (size_t)node;
+
+  return 0;
+}
+
+static int FuseCreate(const char *path, mode_t mode,
+                      struct fuse_file_info *fi) {
+  FileSystem *fs = GetFileSystem();
+
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (parent == nullptr) {
+    return -ENOTDIR;
+  }
+
+  if (node) {
+    if (node->type != kFile) {
+      return -EBADF;
+    }
+    TruncateFile(node);
+  } else {
+    node = CreateFile(parent, name);
+  }
+
+  fi->fh = (uint64_t)node;
+
+  return 0;
+}
+
+int FuseWrite(const char *path, const char *buf, size_t size, off_t offset,
+              struct fuse_file_info *fi) {
+  if (fi == NULL) {
+    return -EBADF;
+  }
+
+  Node *node = (Node *)fi->fh;
+  if (!node || node->type != kFile) {
+    return -EBADF;
+  }
+
+  return WriteFile(node, buf, size, offset);
+}
+
+static int FuseRead(const char *path, char *buf, size_t size, off_t offset,
+                    struct fuse_file_info *fi) {
+  if (fi == NULL) {
+    return -EBADF;
+  }
+
+  Node *node = (Node *)fi->fh;
+  if (!node || node->type != kFile) {
+    return -EBADF;
+  }
+
+  return ReadFile(node, buf, size, offset);
+}
+
+int FuseFlush(const char *path, struct fuse_file_info *fi) { return 0; }
+
+int FuseRelease(const char *path, struct fuse_file_info *fi) { return 0; }
+
+static int FuseMkdir(const char *path, mode_t mode) {
+  FileSystem *fs = GetFileSystem();
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (node != nullptr) {
+    return -EEXIST;
+  }
+  if (parent == nullptr) {
+    return -ENOTDIR;
+  }
+
+  CreateDirectory(parent, name);
+
+  return 0;
+}
+
+static int FuseChmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+  FileSystem *fs = GetFileSystem();
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+
+  return 0;
+}
+
+static int FuseUtime(const char *path, const struct timespec ts[2],
+                     struct fuse_file_info *fi) {
+  FileSystem *fs = GetFileSystem();
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+  node->mtime = ts[1];
   return 0;
 }
 
@@ -217,7 +503,17 @@ static Workspace InitWorkspace(const std::string &workspace_id) {
   fuse_operations op = {
       .getattr = FuseGetattr,
       .mkdir = FuseMkdir,
+      .chmod = FuseChmod,
+      .open = FuseOpen,
+      .read = FuseRead,
+      .write = FuseWrite,
+      .flush = FuseFlush,
+      .release = FuseRelease,
+      .getxattr = FuseGetxattr,
       .init = FuseInit,
+      .access = FuseAccess,
+      .create = FuseCreate,
+      .utimens = FuseUtime,
   };
   const char *argv[] = {
       "",
