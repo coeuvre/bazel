@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 
 #include <memory>
+#include <string_view>
 
 #include "third_party/fuse/fuse.h"
 
@@ -83,6 +84,7 @@ struct Node;
 enum NodeType {
   kFile,
   kDirectory,
+  kSymlink,
 };
 
 struct FileNode {
@@ -92,24 +94,30 @@ struct FileNode {
 };
 
 struct DirectoryNode {
-  std::map<std::string, Node *> children;
+  std::map<std::string, std::unique_ptr<Node>> children;
+};
+
+struct SymlinkNode {
+  std::string target;
 };
 
 struct Node {
   NodeType type;
-  union {
-    FileNode file;
-    DirectoryNode dir;
-  };
+
+  FileNode file;
+  DirectoryNode dir;
+  SymlinkNode symlink;
+
   timespec mtime;
 };
 
 struct FileSystem {
   Node root;
+  std::vector<std::unique_ptr<Node>> deleted_nodes;
 };
 
 static void *FuseInit(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-  FileSystem *fs = (FileSystem *)malloc(sizeof(FileSystem));
+  FileSystem *fs = new FileSystem;
   fs->root.type = kDirectory;
   fs->root.dir = {};
   return fs;
@@ -127,7 +135,7 @@ static int GetChild(Node *node, const char *name, int count, Node **out_child) {
   }
 
   if (out_child) {
-    *out_child = iter->second;
+    *out_child = iter->second.get();
   }
 
   return 0;
@@ -199,11 +207,32 @@ static FileSystem *GetFileSystem() {
   return fs;
 }
 
-Node *CreateNode(Node *parent, const char *name, NodeType type) {
-  Node *child = (Node *)malloc(sizeof(Node));
-  child->type = type;
+std::unique_ptr<Node> RemoveNode(Node *parent, const char *name) {
+  ASSERT(parent->type == kDirectory);
+
+  auto nh = parent->dir.children.extract(std::string(name));
+  ASSERT(!nh.empty());
+
+  return std::move(nh.mapped());
+}
+
+Node *InsertNode(Node *parent, const char *name, std::unique_ptr<Node> up) {
+  ASSERT(parent->type == kDirectory);
+
   auto key = std::string(name);
-  parent->dir.children[key] = child;
+  ASSERT(parent->dir.children.find(key) == parent->dir.children.end());
+
+  return (parent->dir.children[key] = std::move(up)).get();
+}
+
+Node *CreateNode(Node *parent, const char *name, NodeType type) {
+  ASSERT(parent->type == kDirectory);
+
+  auto key = std::string(name);
+  auto result =
+      parent->dir.children.emplace(key, std::move(std::make_unique<Node>()));
+  Node *child = result.first->second.get();
+  child->type = type;
   clock_gettime(CLOCK_REALTIME, &child->mtime);
   return child;
 }
@@ -219,6 +248,12 @@ Node *CreateFile(Node *parent, const char *name) {
   child->file.size = 0;
   child->file.buf = nullptr;
   child->file.cap = 0;
+  return child;
+}
+
+Node *CreateSymlink(Node *parent, const char *name, const char *target) {
+  Node *child = CreateNode(parent, name, kSymlink);
+  child->symlink.target = std::string(target);
   return child;
 }
 
@@ -322,6 +357,19 @@ static int FuseGetattr(const char *path, struct stat *stbuf,
       stbuf->st_ctim = node->mtime;
     } break;
 
+    case kSymlink: {
+      stbuf->st_mode = S_IFLNK | 0777;
+      stbuf->st_nlink = 1;
+      stbuf->st_uid = 0;
+      stbuf->st_gid = 0;
+      stbuf->st_size = node->symlink.target.size();
+      stbuf->st_blksize = 1;
+      stbuf->st_blocks = 1;
+      stbuf->st_atim = node->mtime;
+      stbuf->st_mtim = node->mtime;
+      stbuf->st_ctim = node->mtime;
+    } break;
+
     default: {
       return -ENOSYS;
     } break;
@@ -359,11 +407,11 @@ static int FuseOpen(const char *path, struct fuse_file_info *fi) {
   if (ret != 0) {
     return ret;
   }
-  if (parent == nullptr) {
+  if (!parent) {
     return -ENOTDIR;
   }
 
-  if (node == nullptr) {
+  if (!node) {
     if ((fi->flags & O_CREAT) == 0) {
       return -ENOENT;
     }
@@ -393,7 +441,7 @@ static int FuseCreate(const char *path, mode_t mode,
   if (ret != 0) {
     return ret;
   }
-  if (parent == nullptr) {
+  if (!parent) {
     return -ENOTDIR;
   }
 
@@ -494,6 +542,162 @@ static int FuseUtime(const char *path, const struct timespec ts[2],
   return 0;
 }
 
+static int FuseSymlink(const char *target, const char *linkpath) {
+  FileSystem *fs = GetFileSystem();
+  Node *parent, *node;
+  const char *name;
+  int ret = GetNode(fs, linkpath, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (node) {
+    return -EEXIST;
+  }
+  if (!parent) {
+    return -ENOTDIR;
+  }
+
+  CreateSymlink(parent, name, target);
+
+  return 0;
+}
+
+static int FuseRename(const char *from, const char *to, unsigned int flags) {
+  if (flags) {
+    std::cerr << "Invalid flags " << flags << std::endl;
+    return -EINVAL;
+  }
+
+  FileSystem *fs = GetFileSystem();
+  Node *from_node, *from_parent;
+  const char *from_name;
+  int ret = GetNode(fs, from, &from_parent, &from_node, &from_name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!from_node) {
+    return -ENOENT;
+  }
+
+  Node *to_node, *to_parent;
+  const char *to_name;
+  ret = GetNode(fs, to, &to_parent, &to_node, &to_name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!to_parent) {
+    return -ENOTDIR;
+  }
+
+  if (to_node == from_node) {
+    return 0;
+  }
+
+  if (to_node) {
+    fs->deleted_nodes.push_back(RemoveNode(to_parent, to_name));
+  }
+
+  // TODO: cycles?
+  InsertNode(to_parent, to_name, RemoveNode(from_parent, from_name));
+
+  return 0;
+}
+
+static int FuseReaddir(const char *path, void *buf, fuse_fill_dir_t filler,
+                       off_t offset, struct fuse_file_info *fi,
+                       enum fuse_readdir_flags flags) {
+  FileSystem *fs = GetFileSystem();
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+  if (node->type != kDirectory) {
+    return -ENOTDIR;
+  }
+
+  for (const auto &entry : node->dir.children) {
+    if (filler(buf, entry.first.c_str(), nullptr, 0, (fuse_fill_dir_flags)0)) {
+      return -ENOMEM;
+    }
+  }
+
+  return 0;
+}
+
+static int FuseUnlink(const char *path) {
+  FileSystem *fs = GetFileSystem();
+  Node *node, *parent;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+  if (node->type == kDirectory) {
+    return -EISDIR;
+  }
+
+  ASSERT(parent);
+
+  fs->deleted_nodes.push_back(RemoveNode(parent, name));
+
+  return 0;
+}
+
+static int FuseRmdir(const char *path) {
+  FileSystem *fs = GetFileSystem();
+  Node *node, *parent;
+  const char *name;
+  int ret = GetNode(fs, path, &parent, &node, &name);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+  if (node->type != kDirectory) {
+    return -ENOTDIR;
+  }
+
+  if (!parent) {
+    // path is '/'
+    return -EBUSY;
+  }
+
+  ASSERT(parent);
+
+  fs->deleted_nodes.push_back(RemoveNode(parent, name));
+
+  return 0;
+}
+
+static int FuseReadlink(const char *path, char *buf, size_t size) {
+  FileSystem *fs = GetFileSystem();
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+  if (node->type != kSymlink) {
+    return -EINVAL;
+  }
+
+  size_t str_size = std::min(node->symlink.target.size(), size - 1);
+  memcpy(buf, node->symlink.target.c_str(), str_size);
+  buf[str_size] = 0;
+
+  return 0;
+}
+
 static Workspace InitWorkspace(const std::string &workspace_id) {
   Workspace workspace = {
       .valid = true,
@@ -502,7 +706,12 @@ static Workspace InitWorkspace(const std::string &workspace_id) {
 
   fuse_operations op = {
       .getattr = FuseGetattr,
+      .readlink = FuseReadlink,
       .mkdir = FuseMkdir,
+      .unlink = FuseUnlink,
+      .rmdir = FuseRmdir,
+      .symlink = FuseSymlink,
+      .rename = FuseRename,
       .chmod = FuseChmod,
       .open = FuseOpen,
       .read = FuseRead,
@@ -510,6 +719,7 @@ static Workspace InitWorkspace(const std::string &workspace_id) {
       .flush = FuseFlush,
       .release = FuseRelease,
       .getxattr = FuseGetxattr,
+      .readdir = FuseReaddir,
       .init = FuseInit,
       .access = FuseAccess,
       .create = FuseCreate,

@@ -227,7 +227,7 @@ public class RemoteExecutionService {
     this.captureCorruptedOutputsDir = captureCorruptedOutputsDir;
 
     this.scheduler = Schedulers.from(executor, /* interruptibleWorker= */ true);
-    this.remoteOutputService = checkNotNull(remoteOutputService);
+    this.remoteOutputService = remoteOutputService;
   }
 
   private Command buildCommand(
@@ -1134,12 +1134,12 @@ public class RemoteExecutionService {
       if (!isInMemoryOutputFile && shouldDownload(result, execPath)) {
         Path tmpPath = tempPathGenerator.generateTempPath();
         realToTmpPath.put(file.path, tmpPath);
-        if (remoteOutputService.hasOutputServiceDaemon()) {
-          downloadsBuilder.add(immediateFuture(file));
-        } else {
+        // if (remoteOutputService.hasOutputServiceDaemon()) {
+        //   downloadsBuilder.add(immediateFuture(file));
+        // } else {
           downloadsBuilder.add(downloadFile(
               context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
-        }
+        // }
       } else {
         remoteActionFileSystem.injectRemoteFile(
             file.path().asFragment(),
@@ -1169,12 +1169,12 @@ public class RemoteExecutionService {
         if (shouldDownload(result, file.path.relativeTo(execRoot))) {
           Path tmpPath = tempPathGenerator.generateTempPath();
           realToTmpPath.put(file.path, tmpPath);
-          if (remoteOutputService.hasOutputServiceDaemon()) {
-            downloadsBuilder.add(immediateFuture(file));
-          } else {
+          // if (remoteOutputService.hasOutputServiceDaemon()) {
+          //   downloadsBuilder.add(immediateFuture(file));
+          // } else {
             downloadsBuilder.add(downloadFile(
                 context, progressStatusListener, file, tmpPath, action.getRemotePathResolver()));
-          }
+          // }
         } else {
           remoteActionFileSystem.injectRemoteFile(
               file.path().asFragment(),
@@ -1226,7 +1226,7 @@ public class RemoteExecutionService {
       }
     }
 
-    if (!remoteOutputService.hasOutputServiceDaemon()) {
+    // if (!remoteOutputService.hasOutputServiceDaemon()) {
       // Move the output files from their temporary name to the actual output file name. Executable
       // bit is ignored since the file permission will be changed to 0555 after execution.
       for (FileMetadata outputFile : finishedDownloads) {
@@ -1235,7 +1235,7 @@ public class RemoteExecutionService {
         realPath.getParentDirectory().createDirectoryAndParents();
         FileSystemUtils.moveFile(tmpPath, realPath);
       }
-    }
+    // }
 
     List<SymlinkMetadata> symlinksInDirectories = new ArrayList<>();
     for (Entry<Path, DirectoryMetadata> entry : metadata.directories()) {
@@ -1247,13 +1247,13 @@ public class RemoteExecutionService {
     Iterable<SymlinkMetadata> symlinks =
         Iterables.concat(metadata.symlinks(), symlinksInDirectories);
 
-    if (!remoteOutputService.hasOutputServiceDaemon()) {
+    // if (!remoteOutputService.hasOutputServiceDaemon()) {
       // Create the symbolic links after all downloads are finished, because dangling symlinks
       // might not be supported on all platforms.
       createSymlinks(symlinks);
-    } else {
-      batchCreate(finishedDownloads, symlinks);
-    }
+    // } else {
+    //   batchCreate(finishedDownloads, symlinks);
+    // }
 
     if (result.success()) {
       // Check that all mandatory outputs are created.
