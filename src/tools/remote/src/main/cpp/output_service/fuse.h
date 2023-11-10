@@ -1,12 +1,10 @@
 #ifndef BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
 #define BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
 
-#include <pthread.h>
-
 #include <string>
 
 #include "src/main/protobuf/remote_output_service.grpc.pb.h"
-#include "third_party/fuse/fuse.h"
+#include "src/tools/remote/src/main/cpp/output_service/inmemory_fs.h"
 
 struct Build {
   bool valid;
@@ -16,15 +14,9 @@ struct Build {
 };
 
 struct Workspace {
-  bool valid;
-
   std::string workspace_id;
-
   std::string mount_point;
-  struct fuse *fuse;
-  pthread_t fuse_thread;
-  pthread_mutex_t fuse_thread_mutex;
-
+  FileSystem *fs;
   std::string active_build_id;
 };
 
