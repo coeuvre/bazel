@@ -18,6 +18,7 @@ static void RunServer(uint16_t port, std::string disk_cache) {
   std::string server_address = absl::StrFormat("0.0.0.0:%d", port);
 
   FuseRemoteOutputService service(disk_cache);
+  service.InstallSignalHandlers();
 
   grpc::EnableDefaultHealthCheckService(true);
   grpc::ServerBuilder builder;

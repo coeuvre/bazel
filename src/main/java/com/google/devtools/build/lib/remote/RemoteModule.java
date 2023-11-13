@@ -102,6 +102,7 @@ import com.google.devtools.common.options.OptionsParsingResult;
 import io.grpc.CallCredentials;
 import io.grpc.ClientInterceptor;
 import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
@@ -370,7 +371,22 @@ public final class RemoteModule extends BlazeModule {
       executorService = Executors.newCachedThreadPool(threadFactory);
     }
 
-    remoteOutputService = new RemoteOutputService(env, executorService, remoteOutputChecker);
+    ManagedChannel channelToOutputServiceDaemon = null;
+    if (!Strings.isNullOrEmpty(remoteOptions.remoteOutputService)) {
+      try {
+        channelToOutputServiceDaemon =
+            GoogleAuthUtils.newChannel(
+                executorService, remoteOptions.remoteOutputService, "", authAndTlsOptions, null);
+      } catch (IOException e) {
+        throw createExitException(
+            e.getMessage(),
+            ExitCode.REMOTE_ERROR,
+            Code.REMOTE_EXECUTION_UNKNOWN);
+      }
+    }
+    remoteOutputService =
+        new RemoteOutputService(
+            env, executorService, remoteOutputChecker, channelToOutputServiceDaemon);
 
     Credentials credentials;
     try {

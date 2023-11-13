@@ -27,7 +27,7 @@ struct FileNode {
 };
 
 struct DirectoryNode {
-  std::map<std::string, std::unique_ptr<Node>> children;
+  std::map<std::string, Node *> children;
 };
 
 struct SymlinkNode {
@@ -45,11 +45,13 @@ struct Node {
 };
 
 struct FileSystem {
+  std::string mount_point;
   struct fuse *fuse;
   pthread_t thread;
 
   Node root;
-  std::vector<std::unique_ptr<Node>> deleted_nodes;
+  // An arena for Node
+  std::vector<std::unique_ptr<Node>> nodes;
 };
 
 static void *FuseInit(struct fuse_conn_info *conn, struct fuse_config *cfg) {
@@ -71,7 +73,7 @@ static int GetChild(Node *node, const char *name, int count, Node **out_child) {
   }
 
   if (out_child) {
-    *out_child = iter->second.get();
+    *out_child = iter->second;
   }
 
   return 0;
@@ -143,52 +145,57 @@ static FileSystem *GetFileSystem() {
   return fs;
 }
 
-std::unique_ptr<Node> RemoveNode(Node *parent, const char *name) {
+Node *RemoveNode(Node *parent, const char *name) {
   ASSERT(parent->type == kDirectory);
 
   auto nh = parent->dir.children.extract(std::string(name));
   ASSERT(!nh.empty());
 
-  return std::move(nh.mapped());
+  return nh.mapped();
 }
 
-Node *InsertNode(Node *parent, const char *name, std::unique_ptr<Node> up) {
+void InsertNode(Node *parent, const char *name, Node *child) {
+  ASSERT(parent->type == kDirectory);
+
+  auto key = std::string(name);
+  ASSERT(parent->dir.children.find(key) == parent->dir.children.end());
+  parent->dir.children[key] = child;
+}
+
+Node *CreateNode(FileSystem *fs, Node *parent, const char *name,
+                 NodeType type) {
   ASSERT(parent->type == kDirectory);
 
   auto key = std::string(name);
   ASSERT(parent->dir.children.find(key) == parent->dir.children.end());
 
-  return (parent->dir.children[key] = std::move(up)).get();
-}
-
-Node *CreateNode(Node *parent, const char *name, NodeType type) {
-  ASSERT(parent->type == kDirectory);
-
-  auto key = std::string(name);
-  auto result =
-      parent->dir.children.emplace(key, std::move(std::make_unique<Node>()));
-  Node *child = result.first->second.get();
+  fs->nodes.push_back(std::make_unique<Node>());
+  Node *child = (*(fs->nodes.end() - 1)).get();
   child->type = type;
   clock_gettime(CLOCK_REALTIME, &child->mtime);
+
+  parent->dir.children.emplace(key, child);
+
   return child;
 }
 
-Node *CreateDirectory(Node *parent, const char *name) {
-  Node *child = CreateNode(parent, name, kDirectory);
+Node *CreateDirectory(FileSystem *fs, Node *parent, const char *name) {
+  Node *child = CreateNode(fs, parent, name, kDirectory);
   child->dir = {};
   return child;
 }
 
-Node *CreateFile(Node *parent, const char *name) {
-  Node *child = CreateNode(parent, name, kFile);
+Node *CreateFile(FileSystem *fs, Node *parent, const char *name) {
+  Node *child = CreateNode(fs, parent, name, kFile);
   child->file.size = 0;
   child->file.buf = nullptr;
   child->file.cap = 0;
   return child;
 }
 
-Node *CreateSymlink(Node *parent, const char *name, const char *target) {
-  Node *child = CreateNode(parent, name, kSymlink);
+Node *CreateSymlink(FileSystem *fs, Node *parent, const char *name,
+                    const char *target) {
+  Node *child = CreateNode(fs, parent, name, kSymlink);
   child->symlink.target = std::string(target);
   return child;
 }
@@ -351,7 +358,7 @@ static int FuseOpen(const char *path, struct fuse_file_info *fi) {
     if ((fi->flags & O_CREAT) == 0) {
       return -ENOENT;
     }
-    node = CreateFile(parent, name);
+    node = CreateFile(fs, parent, name);
   } else {
     if (node->type != kFile) {
       return -EBADF;
@@ -387,7 +394,7 @@ static int FuseCreate(const char *path, mode_t mode,
     }
     TruncateFile(node);
   } else {
-    node = CreateFile(parent, name);
+    node = CreateFile(fs, parent, name);
   }
 
   fi->fh = (uint64_t)node;
@@ -442,7 +449,7 @@ static int FuseMkdir(const char *path, mode_t mode) {
     return -ENOTDIR;
   }
 
-  CreateDirectory(parent, name);
+  CreateDirectory(fs, parent, name);
 
   return 0;
 }
@@ -493,7 +500,7 @@ static int FuseSymlink(const char *target, const char *linkpath) {
     return -ENOTDIR;
   }
 
-  CreateSymlink(parent, name, target);
+  CreateSymlink(fs, parent, name, target);
 
   return 0;
 }
@@ -530,7 +537,7 @@ static int FuseRename(const char *from, const char *to, unsigned int flags) {
   }
 
   if (to_node) {
-    fs->deleted_nodes.push_back(RemoveNode(to_parent, to_name));
+    RemoveNode(to_parent, to_name);
   }
 
   // TODO: cycles?
@@ -581,7 +588,7 @@ static int FuseUnlink(const char *path) {
 
   ASSERT(parent);
 
-  fs->deleted_nodes.push_back(RemoveNode(parent, name));
+  RemoveNode(parent, name);
 
   return 0;
 }
@@ -608,7 +615,7 @@ static int FuseRmdir(const char *path) {
 
   ASSERT(parent);
 
-  fs->deleted_nodes.push_back(RemoveNode(parent, name));
+  RemoveNode(parent, name);
 
   return 0;
 }
@@ -635,7 +642,6 @@ static int FuseReadlink(const char *path, char *buf, size_t size) {
 }
 
 struct RunParam {
-  const char *mount_point;
   FileSystem *fs;
   sem_t init_sem;
   bool has_init_error;
@@ -650,19 +656,20 @@ static void *InitError(RunParam *param) {
 static void *RunFuseEventLoop(void *param_) {
   RunParam *param = (RunParam *)param_;
   FileSystem *fs = param->fs;
+  const char *mount_point = fs->mount_point.c_str();
 
-  std::cerr << "Mounting fuse at " << param->mount_point << std::endl;
+  std::cerr << "Mounting fuse at " << mount_point << std::endl;
 
   // TODO: In an incremental buidl, the output path might not be clean. How do
   // we handle that case? Delete the dir?
-  int ret = mkdir(param->mount_point, 0755);
+  int ret = mkdir(mount_point, 0755);
   if (!(ret == 0 || (ret == -1 && errno == EEXIST))) {
-    std::cerr << "Failed to mount at " << param->mount_point << ": "
-              << strerror(errno) << std::endl;
+    std::cerr << "Failed to mount at " << mount_point << ": " << strerror(errno)
+              << std::endl;
     return InitError(param);
   }
 
-  if (fuse_mount(fs->fuse, param->mount_point) != 0) {
+  if (fuse_mount(fs->fuse, mount_point) != 0) {
     std::cerr << "Failed to mount fuse" << std::endl;
     return InitError(param);
   }
@@ -679,11 +686,20 @@ static void *RunFuseEventLoop(void *param_) {
 FileSystem *CreateFileSystem() {
   FileSystem *fs = new FileSystem();
   fs->root.type = kDirectory;
+  std::cerr << "Creating file system " << fs << std::endl;
   return fs;
+}
+
+void DeleteFileSystem(FileSystem *fs) {
+  std::cerr << "Deleting file system " << fs << std::endl;
+  Unmount(fs);
+  delete fs;
 }
 
 int Mount(FileSystem *fs, const char *mount_point) {
   ASSERT(!fs->fuse);
+
+  fs->mount_point = std::string(mount_point);
 
   fuse_operations op = {
       .getattr = FuseGetattr,
@@ -717,14 +733,15 @@ int Mount(FileSystem *fs, const char *mount_point) {
 
   std::unique_ptr<RunParam> param = std::make_unique<RunParam>();
   param->fs = fs;
-  param->mount_point = mount_point;
   int ret = sem_init(&param->init_sem, 0, 0);
   ASSERT(ret == 0);
   ret = pthread_create(&fs->thread, nullptr, RunFuseEventLoop, param.get());
   ASSERT(ret == 0);
   sem_wait(&param->init_sem);
   if (param->has_init_error) {
+    fs->thread = 0;
     fuse_destroy(fs->fuse);
+    fs->fuse = nullptr;
     return -1;
   }
 
@@ -736,10 +753,15 @@ void Unmount(FileSystem *fs) {
     return;
   }
 
+  std::cerr << "Unmounting fuse at " << fs->mount_point << std::endl;
+
   // Unmount fuse will stop the event loop.
   fuse_unmount(fs->fuse);
   pthread_join(fs->thread, nullptr);
   fuse_destroy(fs->fuse);
   fs->thread = 0;
   fs->fuse = nullptr;
+
+  fs->root = {.type = kDirectory};
+  fs->nodes.clear();
 }

@@ -2,6 +2,7 @@
 #define BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
 
 #include <string>
+#include <mutex>
 
 #include "src/main/protobuf/remote_output_service.grpc.pb.h"
 #include "src/tools/remote/src/main/cpp/output_service/inmemory_fs.h"
@@ -25,6 +26,9 @@ class FuseRemoteOutputService final
  public:
   FuseRemoteOutputService(std::string disk_cache) : disk_cache_(disk_cache) {}
 
+  void InstallSignalHandlers();
+  void OnExit();
+
  private:
   grpc::Status Clean(grpc::ServerContext *context,
                      const remote_output_service::CleanRequest *request,
@@ -43,6 +47,7 @@ class FuseRemoteOutputService final
   std::string disk_cache_;
   std::unordered_map<std::string, Workspace> workspaces_;
   std::unordered_map<std::string, Build> builds_;
+  std::mutex mutex_;
 };
 
 #endif  // BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_

@@ -87,7 +87,9 @@ public class RemoteOutputService implements OutputService {
   public RemoteOutputService(
       CommandEnvironment env,
       ExecutorService executorService,
-      RemoteOutputChecker remoteOutputChecker) {
+      RemoteOutputChecker remoteOutputChecker,
+      @Nullable
+      ManagedChannel channelToOutputServiceDaemon) {
     this.env = checkNotNull(env);
     this.executorService = checkNotNull(executorService);
     this.remoteOutputChecker = remoteOutputChecker;
@@ -99,12 +101,7 @@ public class RemoteOutputService implements OutputService {
             md5().hashString(checkNotNull(env.getWorkspace()).toString(), UTF_8));
 
     // TODO: channel pools
-    if (!Strings.isNullOrEmpty(remoteOptions.remoteOutputService)) {
-      this.channel =
-          ManagedChannelBuilder.forTarget(remoteOptions.remoteOutputService).usePlaintext().build();
-    } else {
-      this.channel = null;
-    }
+    this.channel = channelToOutputServiceDaemon;
   }
 
   void setActionInputFetcher(RemoteActionInputFetcher actionInputFetcher) {
@@ -169,6 +166,7 @@ public class RemoteOutputService implements OutputService {
   @Override
   public ModifiedFileSet startBuild(
       EventHandler eventHandler, UUID buildId, boolean finalizeActions) throws AbruptExitException {
+    System.out.println("startBuild, channel=" + channel);
     // One of the responsibilities of OutputService.startBuild() is that
     // it ensures the output path is valid. If the previous
     // OutputService redirected the output path to a remote location, we

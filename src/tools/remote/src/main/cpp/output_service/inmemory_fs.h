@@ -5,6 +5,7 @@ struct Node;
 struct FileSystem;
 
 FileSystem *CreateFileSystem();
+void DeleteFileSystem(FileSystem *fs);
 
 int Mount(FileSystem *fs, const char *mount_point);
 void Unmount(FileSystem *fs);
