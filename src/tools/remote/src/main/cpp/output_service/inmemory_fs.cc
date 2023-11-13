@@ -145,7 +145,7 @@ static FileSystem *GetFileSystem() {
   return fs;
 }
 
-Node *RemoveNode(Node *parent, const char *name) {
+static Node *RemoveNode(Node *parent, const char *name) {
   ASSERT(parent->type == kDirectory);
 
   auto nh = parent->dir.children.extract(std::string(name));
@@ -154,7 +154,7 @@ Node *RemoveNode(Node *parent, const char *name) {
   return nh.mapped();
 }
 
-void InsertNode(Node *parent, const char *name, Node *child) {
+static void InsertNode(Node *parent, const char *name, Node *child) {
   ASSERT(parent->type == kDirectory);
 
   auto key = std::string(name);
@@ -162,8 +162,8 @@ void InsertNode(Node *parent, const char *name, Node *child) {
   parent->dir.children[key] = child;
 }
 
-Node *CreateNode(FileSystem *fs, Node *parent, const char *name,
-                 NodeType type) {
+static Node *CreateNode(FileSystem *fs, Node *parent, const char *name,
+                        NodeType type) {
   ASSERT(parent->type == kDirectory);
 
   auto key = std::string(name);
@@ -179,13 +179,13 @@ Node *CreateNode(FileSystem *fs, Node *parent, const char *name,
   return child;
 }
 
-Node *CreateDirectory(FileSystem *fs, Node *parent, const char *name) {
+static Node *CreateDirectory(FileSystem *fs, Node *parent, const char *name) {
   Node *child = CreateNode(fs, parent, name, kDirectory);
   child->dir = {};
   return child;
 }
 
-Node *CreateFile(FileSystem *fs, Node *parent, const char *name) {
+static Node *CreateFile(FileSystem *fs, Node *parent, const char *name) {
   Node *child = CreateNode(fs, parent, name, kFile);
   child->file.size = 0;
   child->file.buf = nullptr;
@@ -193,14 +193,14 @@ Node *CreateFile(FileSystem *fs, Node *parent, const char *name) {
   return child;
 }
 
-Node *CreateSymlink(FileSystem *fs, Node *parent, const char *name,
-                    const char *target) {
+static Node *CreateSymlink(FileSystem *fs, Node *parent, const char *name,
+                           const char *target) {
   Node *child = CreateNode(fs, parent, name, kSymlink);
   child->symlink.target = std::string(target);
   return child;
 }
 
-void TruncateFile(Node *node) {
+static void TruncateFile(Node *node) {
   ASSERT(node->type == kFile);
   node->file.size = 0;
   clock_gettime(CLOCK_REALTIME, &node->mtime);
@@ -229,7 +229,7 @@ int WriteFile(Node *node, const char *buf, size_t size, off_t offset) {
   return size;
 }
 
-int ReadFile(Node *node, char *buf, size_t size, off_t offset) {
+static int ReadFile(Node *node, char *buf, size_t size, off_t offset) {
   ASSERT(node->type == kFile);
 
   FileNode *file = &node->file;
@@ -402,8 +402,8 @@ static int FuseCreate(const char *path, mode_t mode,
   return 0;
 }
 
-int FuseWrite(const char *path, const char *buf, size_t size, off_t offset,
-              struct fuse_file_info *fi) {
+static int FuseWrite(const char *path, const char *buf, size_t size,
+                     off_t offset, struct fuse_file_info *fi) {
   if (fi == NULL) {
     return -EBADF;
   }
@@ -430,9 +430,11 @@ static int FuseRead(const char *path, char *buf, size_t size, off_t offset,
   return ReadFile(node, buf, size, offset);
 }
 
-int FuseFlush(const char *path, struct fuse_file_info *fi) { return 0; }
+static int FuseFlush(const char *path, struct fuse_file_info *fi) { return 0; }
 
-int FuseRelease(const char *path, struct fuse_file_info *fi) { return 0; }
+static int FuseRelease(const char *path, struct fuse_file_info *fi) {
+  return 0;
+}
 
 static int FuseMkdir(const char *path, mode_t mode) {
   FileSystem *fs = GetFileSystem();

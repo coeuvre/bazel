@@ -93,13 +93,9 @@ public class RemoteOutputService implements OutputService {
     this.env = checkNotNull(env);
     this.executorService = checkNotNull(executorService);
     this.remoteOutputChecker = remoteOutputChecker;
-
-    var remoteOptions = env.getOptions().getOptions(RemoteOptions.class);
-
     this.workspaceId =
         DigestUtil.hashCodeToString(
             md5().hashString(checkNotNull(env.getWorkspace()).toString(), UTF_8));
-
     // TODO: channel pools
     this.channel = channelToOutputServiceDaemon;
   }
