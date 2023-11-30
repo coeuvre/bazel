@@ -44,7 +44,6 @@ import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreate
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.Symlink;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
-import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.Execution;
@@ -162,7 +161,6 @@ public class RemoteOutputService implements OutputService {
   @Override
   public ModifiedFileSet startBuild(
       EventHandler eventHandler, UUID buildId, boolean finalizeActions) throws AbruptExitException {
-    System.out.println("startBuild, channel=" + channel);
     // One of the responsibilities of OutputService.startBuild() is that
     // it ensures the output path is valid. If the previous
     // OutputService redirected the output path to a remote location, we
@@ -316,6 +314,8 @@ public class RemoteOutputService implements OutputService {
 
   public void batchCreate(Iterable<File> files, Iterable<Symlink> symlinks) throws IOException {
     checkState(channel != null);
+
+    System.out.println("batchCreate, channel=" + channel);
 
     var request =
         BatchCreateRequest.newBuilder()
