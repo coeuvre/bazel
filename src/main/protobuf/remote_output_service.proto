@@ -52,6 +52,9 @@ service RemoteOutputService {
   // Create one or more files, directories or symbolic links in the
   // output path.
   rpc BatchCreate(BatchCreateRequest) returns (google.protobuf.Empty);
+
+  // Signal that a build has been completed.
+  rpc FinalizeBuild(FinalizeBuildRequest) returns (google.protobuf.Empty);
 }
 
 message CleanRequest {
@@ -176,4 +179,14 @@ message BatchCreateRequest {
   // This means that symbolic links are not followed when evaluating
   // path_prefix and OutputDirectory.path.
   repeated Directory directories = 4;
+}
+
+message FinalizeBuildRequest {
+  // The identifier of the build that should be finalized.
+  string build_id = 1;
+
+  // Whether the build completed successfully. The remote output service
+  // may, for example, use this option to apply different retention
+  // policies that take the outcome of the build into account.
+  bool build_successful = 2;
 }

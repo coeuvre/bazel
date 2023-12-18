@@ -46,7 +46,9 @@ static Build StartBuild(Workspace *workspace, const std::string &build_id,
   return build;
 }
 
-static void FinalizeBuild(Workspace *workspace, Build *build) {}
+static void FinalizeBuild(Workspace *workspace, Build *build) {
+  workspace->active_build_id = "";
+}
 
 static void Clean(Workspace *workspace) {
   ASSERT(workspace->active_build_id == "");
@@ -108,7 +110,7 @@ grpc::Status FuseRemoteOutputService::Clean(
     if (workspace.active_build_id != "") {
       std::cerr << "Finalize previous build" << std::endl;
       auto &build = builds_[workspace.active_build_id];
-      FinalizeBuild(&workspace, &build);
+      ::FinalizeBuild(&workspace, &build);
       builds_.erase(workspace.active_build_id);
       workspace.active_build_id = "";
     }
@@ -137,12 +139,8 @@ grpc::Status FuseRemoteOutputService::StartBuild(
 
   auto &workspace = workspaces_[workspace_id];
   if (workspace.active_build_id != "") {
-    std::cerr << "Finalize previous build " << workspace.active_build_id
-              << std::endl;
-    auto &build = builds_[workspace.active_build_id];
-    FinalizeBuild(&workspace, &build);
-    builds_.erase(workspace.active_build_id);
-    workspace.active_build_id = "";
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "another build is active");
   }
 
   std::cerr << "Starting a new build " << request->build_id() << std::endl;
@@ -269,6 +267,40 @@ grpc::Status FuseRemoteOutputService::BatchCreate(
       return grpc::Status(grpc::StatusCode::INTERNAL, "Failed to create file");
     }
   }
+
+  return grpc::Status::OK;
+}
+
+grpc::Status FuseRemoteOutputService::FinalizeBuild(
+    grpc::ServerContext *context,
+    const remote_output_service::FinalizeBuildRequest *request,
+    google::protobuf::Empty *response) {
+  auto lock = std::lock_guard(this->mutex_);
+
+  std::cerr << "FinalizeBuild("
+            << "build_id = " << request->build_id()
+            << ", build_successful = " << request->build_successful() << ")"
+            << std::endl;
+
+  auto &build_id = request->build_id();
+  if (builds_.find(build_id) == builds_.end()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Unknown build_id");
+  }
+  auto &build = builds_[request->build_id()];
+
+  if (workspaces_.find(build.workspace_id) == workspaces_.end()) {
+    return grpc::Status(grpc::StatusCode::INTERNAL, "Unknown workspace_id");
+  }
+  auto &workspace = workspaces_[build.workspace_id];
+
+  if (workspace.active_build_id != build_id) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "build is not active");
+  }
+
+  ::FinalizeBuild(&workspace, &build);
+
+  builds_.erase(build_id);
 
   return grpc::Status::OK;
 }

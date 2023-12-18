@@ -1,8 +1,8 @@
 #ifndef BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
 #define BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
 
-#include <string>
 #include <mutex>
+#include <string>
 
 #include "src/main/protobuf/remote_output_service.grpc.pb.h"
 #include "src/tools/remote/src/main/cpp/output_service/inmemory_fs.h"
@@ -42,6 +42,11 @@ class FuseRemoteOutputService final
   grpc::Status BatchCreate(
       grpc::ServerContext *context,
       const remote_output_service::BatchCreateRequest *request,
+      google::protobuf::Empty *response) override;
+
+  grpc::Status FinalizeBuild(
+      grpc::ServerContext *context,
+      const remote_output_service::FinalizeBuildRequest *request,
       google::protobuf::Empty *response) override;
 
   std::string disk_cache_;

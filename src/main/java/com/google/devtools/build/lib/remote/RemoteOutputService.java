@@ -19,7 +19,6 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.hash.Hashing.md5;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -43,6 +42,7 @@ import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreate
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.File;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.Symlink;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FinalizeBuildRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
@@ -60,7 +60,6 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
@@ -215,6 +214,16 @@ public class RemoteOutputService implements OutputService {
   @Override
   public void finalizeBuild(boolean buildSuccessful) {
     // Intentionally left empty.
+    if (channel != null) {
+      var stub = newBlockingStub();
+      var request =
+          FinalizeBuildRequest.newBuilder()
+              .setBuildId(buildId)
+              .setBuildSuccessful(buildSuccessful)
+              .build();
+      // TODO(chiwang): Handle gRPC error
+      stub.finalizeBuild(request);
+    }
   }
 
   @Subscribe
@@ -314,8 +323,6 @@ public class RemoteOutputService implements OutputService {
 
   public void batchCreate(Iterable<File> files, Iterable<Symlink> symlinks) throws IOException {
     checkState(channel != null);
-
-    System.out.println("batchCreate, channel=" + channel);
 
     var request =
         BatchCreateRequest.newBuilder()
