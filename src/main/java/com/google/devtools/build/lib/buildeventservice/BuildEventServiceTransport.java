@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.buildeventservice;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.eventbus.EventBus;
@@ -52,7 +53,8 @@ public class BuildEventServiceTransport implements BuildEventTransport {
       Duration closeTimeout,
       Sleeper sleeper,
       Timestamp commandStartTime,
-      BesUploadMode besUploadMode) {
+      BesUploadMode besUploadMode,
+      int attemptNumber) {
     this.besTimeout = closeTimeout;
     this.besUploader =
         new BuildEventServiceUploader.Builder()
@@ -66,6 +68,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
             .artifactGroupNamer(artifactGroupNamer)
             .eventBus(eventBus)
             .commandStartTime(commandStartTime)
+            .attemptNumber(attemptNumber)
             .build();
     this.besUploadMode = besUploadMode;
   }
@@ -122,6 +125,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
     private EventBus eventBus;
     @Nullable private Sleeper sleeper;
     private Timestamp commandStartTime;
+    private int attemptNumber;
 
     @CanIgnoreReturnValue
     public Builder besClient(BuildEventServiceClient value) {
@@ -184,8 +188,15 @@ public class BuildEventServiceTransport implements BuildEventTransport {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder attemptNumber(int attemptNumber) {
+      this.attemptNumber = attemptNumber;
+      return this;
+    }
+
     public BuildEventServiceTransport build() {
       checkNotNull(besOptions);
+      checkState(attemptNumber >= 1);
       return new BuildEventServiceTransport(
           checkNotNull(besClient),
           checkNotNull(localFileUploader),
@@ -198,7 +209,8 @@ public class BuildEventServiceTransport implements BuildEventTransport {
           (besOptions.besTimeout != null) ? besOptions.besTimeout : Duration.ZERO,
           sleeper != null ? sleeper : new JavaSleeper(),
           checkNotNull(commandStartTime),
-          besOptions.besUploadMode);
+          besOptions.besUploadMode,
+          attemptNumber);
     }
   }
 }

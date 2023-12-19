@@ -118,6 +118,7 @@ public class CommandEnvironment {
   private final BuildResultListener buildResultListener;
   private final CommandLinePathFactory commandLinePathFactory;
   private final CommandExtensionReporter commandExtensionReporter;
+  private final int attemptNumber;
 
   private boolean mergedAnalysisAndExecution;
 
@@ -190,7 +191,8 @@ public class CommandEnvironment {
       long commandStartTime,
       List<Any> commandExtensions,
       Consumer<String> shutdownReasonConsumer,
-      CommandExtensionReporter commandExtensionReporter) {
+      CommandExtensionReporter commandExtensionReporter,
+      int attemptNumber) {
     this.runtime = runtime;
     this.workspace = workspace;
     this.directories = workspace.getDirectories();
@@ -205,6 +207,7 @@ public class CommandEnvironment {
     this.commandExtensionReporter = commandExtensionReporter;
     this.blazeModuleEnvironment = new BlazeModuleEnvironment();
     this.timestampGranularityMonitor = new TimestampGranularityMonitor(runtime.getClock());
+    this.attemptNumber = attemptNumber;
     // Record the command's starting time again, for use by
     // TimestampGranularityMonitor.waitForTimestampGranularity().
     // This should be done as close as possible to the start of
@@ -937,5 +940,9 @@ public class CommandEnvironment {
   @SuppressWarnings("unused")
   void gotBuildInfo(BuildInfoEvent event) {
     buildInfoPosted = true;
+  }
+
+  public int getAttemptNumber() {
+    return attemptNumber;
   }
 }

@@ -2014,6 +2014,7 @@ EOF
       --remote_executor=grpc://localhost:${worker_port} \
       --remote_download_minimal \
       --experimental_remote_cache_eviction_retries=1 \
+      --build_event_text_file=bep.txt \
       //a:bar >& $TEST_log || fail "Failed to build"
 
   expect_log 'Failed to fetch blobs because they do not exist remotely.'
@@ -2025,6 +2026,9 @@ EOF
   if [ "$first_id" == "$second_id" ]; then
     fail "Invocation IDs are the same"
   fi
+
+  assert_contains "attempt_number: 1" bep.txt
+  assert_contains "attempt_number: 2" bep.txt
 }
 
 function test_remote_cache_eviction_retries_with_fixed_invocation_id() {

@@ -781,6 +781,7 @@ public abstract class BuildEventServiceModule<OptionsT extends BuildEventService
         .clock(cmdEnv.getRuntime().getClock())
         .eventBus(cmdEnv.getEventBus())
         .commandStartTime(Timestamps.fromMillis(cmdEnv.getCommandStartTime()))
+        .attemptNumber(cmdEnv.getAttemptNumber())
         .build();
   }
 

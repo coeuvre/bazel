@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.buildeventservice;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.devtools.build.v1.BuildStatus.Result.COMMAND_FAILED;
 import static com.google.devtools.build.v1.BuildStatus.Result.COMMAND_SUCCEEDED;
 import static com.google.devtools.build.v1.BuildStatus.Result.UNKNOWN_STATUS;
@@ -110,6 +111,7 @@ public final class BuildEventServiceUploader implements Runnable {
   // be *before* the event_time for any BuildEvents uploaded after they are received via
   // `#enqueueEvent(BuildEvent)`.
   private final Timestamp eventStreamStartTime;
+  private final int attemptNumber;
   private boolean startedClose = false;
 
   private final ScheduledExecutorService timeoutExecutor =
@@ -161,7 +163,8 @@ public final class BuildEventServiceUploader implements Runnable {
       Clock clock,
       ArtifactGroupNamer namer,
       EventBus eventBus,
-      Timestamp commandStartTime) {
+      Timestamp commandStartTime,
+      int attemptNumber) {
     this.besClient = besClient;
     this.buildEventUploader = localFileUploader;
     this.besProtoUtil = besProtoUtil;
@@ -173,6 +176,7 @@ public final class BuildEventServiceUploader implements Runnable {
     this.eventBus = eventBus;
     this.commandStartTime = commandStartTime;
     this.eventStreamStartTime = currentTime();
+    this.attemptNumber = attemptNumber;
     // Ensure the half-close future is closed once the upload is complete. This is usually a no-op,
     // but makes sure we half-close in case of error / interrupt.
     closeFuture.addListener(
@@ -304,7 +308,7 @@ public final class BuildEventServiceUploader implements Runnable {
     try {
       if (publishLifecycleEvents) {
         publishLifecycleEvent(besProtoUtil.buildEnqueued(commandStartTime));
-        publishLifecycleEvent(besProtoUtil.invocationStarted(eventStreamStartTime));
+        publishLifecycleEvent(besProtoUtil.invocationStarted(eventStreamStartTime, attemptNumber));
       }
 
       try {
@@ -749,6 +753,7 @@ public final class BuildEventServiceUploader implements Runnable {
     private ArtifactGroupNamer artifactGroupNamer;
     private EventBus eventBus;
     private Timestamp commandStartTime;
+    private int attemptNumber;
 
     @CanIgnoreReturnValue
     Builder besClient(BuildEventServiceClient value) {
@@ -810,7 +815,14 @@ public final class BuildEventServiceUploader implements Runnable {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder attemptNumber(int attemptNumber) {
+      this.attemptNumber = attemptNumber;
+      return this;
+    }
+
     BuildEventServiceUploader build() {
+      checkState(attemptNumber >= 1);
       return new BuildEventServiceUploader(
           checkNotNull(besClient),
           checkNotNull(localFileUploader),
@@ -821,7 +833,8 @@ public final class BuildEventServiceUploader implements Runnable {
           checkNotNull(clock),
           checkNotNull(artifactGroupNamer),
           checkNotNull(eventBus),
-          checkNotNull(commandStartTime));
+          checkNotNull(commandStartTime),
+          attemptNumber);
     }
   }
 

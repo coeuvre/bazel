@@ -86,14 +86,14 @@ public final class BuildEventServiceProtoUtil {
         .build();
   }
 
-  public PublishLifecycleEventRequest invocationStarted(Timestamp timestamp) {
+  public PublishLifecycleEventRequest invocationStarted(Timestamp timestamp, int attemptNumber) {
     return lifecycleEvent(
             projectId,
             1,
             com.google.devtools.build.v1.BuildEvent.newBuilder()
                 .setEventTime(timestamp)
                 .setInvocationAttemptStarted(
-                    InvocationAttemptStarted.newBuilder().setAttemptNumber(1)))
+                    InvocationAttemptStarted.newBuilder().setAttemptNumber(attemptNumber)))
         .build();
   }
 
