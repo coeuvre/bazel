@@ -17,7 +17,7 @@
 """
 
 load("//:distdir.bzl", "distdir_tar", "repo_cache_tar")
-load("//:repositories.bzl", "DIST_ARCHIVE_REPOS", "android_deps_repos", "bazelci_rules_repo", "embedded_jdk_repositories")
+load("//:repositories.bzl", "DIST_ARCHIVE_REPOS", "android_deps_repos", "bazelci_rules_repo", "embedded_jdk_repositories", "output_service_repos")
 load("//:workspace_deps.bzl", "WORKSPACE_REPOS")
 load("//src/main/res:winsdk_configure.bzl", "winsdk_configure")
 load("//src/test/shell/bazel:list_source_repository.bzl", "list_source_repository")
@@ -49,3 +49,9 @@ def _bazel_android_deps(_ctx):
     android_deps_repos()
 
 bazel_android_deps = module_extension(implementation = _bazel_android_deps)
+
+### Dependencies for Output Service
+def _bazel_output_service_deps(_ctx):
+    output_service_repos()
+
+bazel_output_service_deps = module_extension(implementation = _bazel_output_service_deps)

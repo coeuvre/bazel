@@ -136,3 +136,15 @@ def android_deps_repos():
         strip_prefix = "desugar_jdk_libs-24dcd1dead0b64aae3d7c89ca9646b5dc4068009",
         url = "https://github.com/google/desugar_jdk_libs/archive/24dcd1dead0b64aae3d7c89ca9646b5dc4068009.zip",
     )
+
+def output_service_repos():
+    """Required by building output service server."""
+    http_archive(
+        name = "libfuse",
+        strip_prefix = "libfuse-fuse-3.10.4",
+        urls = [
+            "https://github.com/libfuse/libfuse/archive/refs/tags/fuse-3.10.4.tar.gz",
+        ],
+        integrity = "sha256-v8slIP2D2ynp/v1X06vVKF84rUhHOa7ujgP77JstmEo=",
+        build_file = "//:BUILD.libfuse",
+    )

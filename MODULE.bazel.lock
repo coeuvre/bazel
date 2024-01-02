@@ -1,6 +1,6 @@
 {
   "lockFileVersion": 3,
-  "moduleFileHash": "40a8230b8e83c355a617701c5c9ed2df3932ab037d3b4ad036dc056738bcf888",
+  "moduleFileHash": "5c766f09fbf9112461960921dd36d5e71cafc82c63c42c7ac6994fdecfd13e74",
   "flags": {
     "cmdRegistries": [
       "https://bcr.bazel.build/"
@@ -602,6 +602,23 @@
           "imports": {
             "android_gmaven_r8": "android_gmaven_r8",
             "android_tools": "android_tools"
+          },
+          "devImports": [],
+          "tags": [],
+          "hasDevUseExtension": false,
+          "hasNonDevUseExtension": true
+        },
+        {
+          "extensionBzlFile": "@io_bazel//:extensions.bzl",
+          "extensionName": "bazel_output_service_deps",
+          "usingModule": "<root>",
+          "location": {
+            "file": "@@//:MODULE.bazel",
+            "line": 358,
+            "column": 42
+          },
+          "imports": {
+            "libfuse": "libfuse"
           },
           "devImports": [],
           "tags": [],
@@ -2503,9 +2520,31 @@
         }
       }
     },
+    "//:extensions.bzl%bazel_output_service_deps": {
+      "general": {
+        "bzlTransitiveDigest": "Re8mj1+Mlg5ZRKkSz7+R6Tv1neg2x2X4UUXw8XjrxMI=",
+        "accumulatedFileDigests": {},
+        "envVariables": {},
+        "generatedRepoSpecs": {
+          "libfuse": {
+            "bzlFile": "@@//tools/build_defs/repo:http.bzl",
+            "ruleClassName": "http_archive",
+            "attributes": {
+              "name": "_main~bazel_output_service_deps~libfuse",
+              "strip_prefix": "libfuse-fuse-3.10.4",
+              "urls": [
+                "https://github.com/libfuse/libfuse/archive/refs/tags/fuse-3.10.4.tar.gz"
+              ],
+              "integrity": "sha256-v8slIP2D2ynp/v1X06vVKF84rUhHOa7ujgP77JstmEo=",
+              "build_file": "@@//:BUILD.libfuse"
+            }
+          }
+        }
+      }
+    },
     "//:extensions.bzl%bazel_test_deps": {
       "general": {
-        "bzlTransitiveDigest": "DSeXJLRZhP/A/L6FhhbvcMg1auJWnRmHqERfXhXJwZY=",
+        "bzlTransitiveDigest": "Re8mj1+Mlg5ZRKkSz7+R6Tv1neg2x2X4UUXw8XjrxMI=",
         "accumulatedFileDigests": {},
         "envVariables": {},
         "generatedRepoSpecs": {
