@@ -4,6 +4,7 @@ package remote_output_service;
 
 import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 
 option java_package = "com.google.devtools.build.lib.remote";
 option java_outer_classname = "RemoteOutputServiceProto";
@@ -53,6 +54,12 @@ service RemoteOutputService {
   // output path.
   rpc BatchCreate(BatchCreateRequest) returns (google.protobuf.Empty);
 
+  // TODO: finalizeAction rpc.
+
+  // Obtain the status of one or more files, directories or symbolic
+  // links that are stored in the input path.
+  rpc BatchStat(BatchStatRequest) returns (BatchStatResponse);
+
   // Signal that a build has been completed.
   rpc FinalizeBuild(FinalizeBuildRequest) returns (google.protobuf.Empty);
 }
@@ -99,8 +106,6 @@ message StartBuildRequest {
   // service is capable of expanding symbolic links containing absolute
   // paths.
   string output_path = 3;
-
-  // TODO(chiwang): fields for RBE authentication?
 }
 
 message InitialOutputPathContents {
@@ -126,8 +131,10 @@ message StartBuildResponse {
 
 message BatchCreateRequest {
   message File {
+    // Path is relative to StartBuildRequest.output_path.
     string path = 1;
     int32 mode = 2;
+    // TODO: Use a dedicate Digest message
     build.bazel.remote.execution.v2.Digest digest = 3;
   }
 
@@ -179,6 +186,62 @@ message BatchCreateRequest {
   // This means that symbolic links are not followed when evaluating
   // path_prefix and OutputDirectory.path.
   repeated Directory directories = 4;
+}
+
+message BatchStatRequest {
+  // The identifier of the build. The remote output service uses this to
+  // determine which output path needs to be inspected.
+  string build_id = 1;
+
+  // Paths whose status needs to be obtained. Path is relative to
+  // StartBuildRequest.output_path.
+  repeated string paths = 2;
+}
+
+message BatchStatResponse {
+  // The status response for each of the requested paths, using the same
+  // order as requested. This means that this list has the same length
+  // as BatchStatRequest.paths.
+  repeated StatResponse responses = 1;
+}
+
+message StatResponse {
+  // The status of the file. If the file corresponding with the
+  // requested path does not exist, this field will be null.
+  FileStatus file_status = 1;
+}
+
+message FileStatus {
+  message File {
+    // The hash and size of the file.
+    build.bazel.remote.execution.v2.Digest digest = 1;
+    // The time at which the file contents were last modified.
+    google.protobuf.Timestamp last_modified_time = 2;
+  }
+
+  message Symlink {
+    // The target of the symbolic link. This field is only set when
+    // BatchStatRequest.include_symlink_target is set.
+    string target = 1;
+    // The time at which the symlink itself were last modified.
+    google.protobuf.Timestamp last_modified_time = 2;
+  }
+
+  message Directory {
+    // The time at which the directory contents were last modified.
+    google.protobuf.Timestamp last_modified_time = 1;
+  }
+
+  oneof file_type {
+    // The path resolves to a regular file.
+    File file = 1;
+
+    // The path resolves to a symbolic link.
+    Symlink symlink = 2;
+
+    // The path resolves to a directory.
+    Directory directory = 3;
+  }
 }
 
 message FinalizeBuildRequest {
