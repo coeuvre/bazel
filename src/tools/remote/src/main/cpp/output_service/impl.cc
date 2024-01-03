@@ -2,6 +2,7 @@
 
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 
 #include <fstream>
 
@@ -231,7 +232,8 @@ static bool CopyFile(const std::string &dst, const std::string &src) {
 static bool CreateFile(
     const std::string &output_path, const std::string &disk_cache,
     const std::string &path,
-    const build::bazel::remote::execution::v2::Digest &digest, int mode) {
+    const build::bazel::remote::execution::v2::Digest &digest, int mode,
+    const std::string &unix_digest_hash_attribute_name) {
   auto blob_path =
       disk_cache + "/cas/" + digest.hash().substr(0, 2) + "/" + digest.hash();
 
@@ -247,6 +249,14 @@ static bool CreateFile(
 
   if (chmod(output.c_str(), mode) != 0) {
     std::cerr << "Failed to chmod " << output << ": " << strerror(errno)
+              << std::endl;
+    return false;
+  }
+
+  auto hash = digest.hash();
+  if (setxattr(output.c_str(), unix_digest_hash_attribute_name.c_str(),
+               hash.data(), hash.size(), 0) != 0) {
+    std::cerr << "Failed to setxattr " << output << ": " << strerror(errno)
               << std::endl;
     return false;
   }
@@ -294,15 +304,9 @@ grpc::Status RemoteOutputServiceImpl::BatchCreate(
               << ", hash = " << file.digest().hash()
               << ", size = " << file.digest().size_bytes() << std::endl;
     if (!CreateFile(build->output_path, disk_cache_, file.path(), file.digest(),
-                    file.mode())) {
+                    file.mode(), workspace->unix_digest_hash_attribute_name)) {
       return grpc::Status(grpc::StatusCode::INTERNAL, "Failed to create file");
     }
-
-    auto path = "/" + file.path();
-    auto hash = file.digest().hash();
-    std::cerr << "        setting hash " << hash << " to xattr on path " << path
-              << std::endl;
-    MaybeSetDigestHashToXAttr(workspace->fs, path.c_str(), hash.c_str());
   }
 
   for (auto &symlink : request->symlinks()) {

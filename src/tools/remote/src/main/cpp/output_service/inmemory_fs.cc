@@ -3,12 +3,14 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "inmemory_fs.h"
@@ -44,7 +46,7 @@ struct Node {
 
   timespec mtime;
 
-  std::string hash;
+  std::unordered_map<std::string, std::vector<char>> xattrs;
 };
 
 struct FileSystem {
@@ -318,6 +320,33 @@ static int FuseGetattr(const char *path, struct stat *stbuf,
   return 0;
 }
 
+static int FuseSetxattr(const char *path, const char *name, const char *value,
+                        size_t size, int flags) {
+  FileSystem *fs = GetFileSystem();
+
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+
+  auto name_str = std::string(name);
+  bool exist = node->xattrs.find(name_str) != node->xattrs.end();
+  if (flags == XATTR_CREATE && exist) {
+    return -EEXIST;
+  }
+  if (flags == XATTR_REPLACE && !exist) {
+    return -ENODATA;
+  }
+
+  node->xattrs[name_str] = std::vector<char>(value, value + size);
+
+  return 0;
+}
+
 static int FuseGetxattr(const char *path, const char *name, char *value,
                         size_t size) {
   FileSystem *fs = GetFileSystem();
@@ -331,17 +360,47 @@ static int FuseGetxattr(const char *path, const char *name, char *value,
     return -ENOENT;
   }
 
-  if (std::string_view(name) == fs->unix_digest_hash_attribute_name &&
-      node->hash.size() > 0) {
-    if (size < node->hash.size()) {
-      return -ERANGE;
-    }
-    std::cerr << path << ": " << node->hash << std::endl;
-    memcpy(value, node->hash.c_str(), size);
-    return node->hash.size();
+  auto iter = node->xattrs.find(std::string(name));
+  if (iter == node->xattrs.end()) {
+    return -ENODATA;
   }
 
-  return -ENODATA;
+  auto &v = iter->second;
+  if (size > 0) {
+    if (v.size() > size) {
+      return -ERANGE;
+    }
+    memcpy(value, v.data(), v.size());
+  }
+  return v.size();
+}
+
+static int FuseListxattr(const char *path, char *list, size_t size) {
+  FileSystem *fs = GetFileSystem();
+
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return ret;
+  }
+  if (!node) {
+    return -ENOENT;
+  }
+
+  int idx = 0;
+  for (auto &it : node->xattrs) {
+    auto &name = it.first;
+    auto name_size = name.size() + 1;  // include the null-terminator
+    if (size > 0) {
+      if (idx + name_size > size) {
+        return -ERANGE;
+      }
+      memcpy(list + idx, name.c_str(), name_size);
+    }
+    idx += name_size;
+  }
+
+  return idx;
 }
 
 static int FuseOpen(const char *path, struct fuse_file_info *fi) {
@@ -716,7 +775,9 @@ FileSystem *Mount(const char *mount_point,
       .write = FuseWrite,
       .flush = FuseFlush,
       .release = FuseRelease,
+      .setxattr = FuseSetxattr,
       .getxattr = FuseGetxattr,
+      .listxattr = FuseListxattr,
       .readdir = FuseReaddir,
       .access = FuseAccess,
       .create = FuseCreate,
@@ -724,7 +785,7 @@ FileSystem *Mount(const char *mount_point,
   };
   const char *argv[] = {
       "",
-      // "-d",  // enable fuse debug
+      "-d",  // enable fuse debug
   };
   fuse_args args = FUSE_ARGS_INIT(sizeof(argv) / sizeof(*argv), (char **)argv);
   fs->fuse = fuse_new(&args, &op, sizeof(op), fs);
@@ -754,18 +815,4 @@ void Unmount(FileSystem *fs) {
   pthread_join(fs->thread, nullptr);
   fuse_destroy(fs->fuse);
   delete fs;
-}
-
-void MaybeSetDigestHashToXAttr(FileSystem *fs, const char *path,
-                                const char *hash) {
-  Node *node;
-  int ret = GetNode(fs, path, nullptr, &node);
-  if (ret != 0) {
-    return;
-  }
-  if (!node) {
-    return;
-  }
-
-  node->hash = std::string(hash);
 }
