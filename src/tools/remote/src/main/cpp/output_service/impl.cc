@@ -34,21 +34,17 @@ static Build StartBuild(Workspace *workspace, const std::string &build_id,
       .output_path = output_path,
   };
 
-  if (workspace->mount_point != output_path ||
-      workspace->unix_digest_hash_attribute_name !=
-          unix_digest_hash_attribute_name) {
+  workspace->unix_digest_hash_attribute_name = unix_digest_hash_attribute_name;
+
+  if (workspace->mount_point != output_path) {
     if (workspace->fs) {
       Unmount(workspace->fs);
     }
 
     workspace->mount_point = output_path;
-    workspace->unix_digest_hash_attribute_name =
-        unix_digest_hash_attribute_name;
-    workspace->fs = Mount(workspace->mount_point.c_str(),
-                          unix_digest_hash_attribute_name.c_str());
+    workspace->fs = Mount(workspace->mount_point.c_str());
     if (!workspace->fs) {
       workspace->mount_point = "";
-      workspace->unix_digest_hash_attribute_name = "";
       return InvalidBuild();
     }
   }

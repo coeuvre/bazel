@@ -51,7 +51,6 @@ struct Node {
 
 struct FileSystem {
   std::string mount_point;
-  std::string unix_digest_hash_attribute_name;
   struct fuse *fuse;
   pthread_t thread;
 
@@ -727,8 +726,6 @@ static void *RunFuseEventLoop(void *param_) {
   const char *mount_point = fs->mount_point.c_str();
 
   std::cerr << "Mounting fuse at " << fs->mount_point << " ..." << std::endl;
-  std::cerr << "    unix_digest_hash_attribute_name = "
-            << fs->unix_digest_hash_attribute_name << std::endl;
 
   // TODO: In an incremental buidl, the output path might not be clean. How do
   // we handle that case? Delete the dir?
@@ -753,12 +750,9 @@ static void *RunFuseEventLoop(void *param_) {
   return nullptr;
 }
 
-FileSystem *Mount(const char *mount_point,
-                  const char *unix_digest_hash_attribute_name) {
+FileSystem *Mount(const char *mount_point) {
   FileSystem *fs = new FileSystem();
   fs->mount_point = std::string(mount_point);
-  fs->unix_digest_hash_attribute_name =
-      std::string(unix_digest_hash_attribute_name);
   fs->root.type = kDirectory;
 
   fuse_operations op = {

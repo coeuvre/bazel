@@ -4,11 +4,7 @@
 struct Node;
 struct FileSystem;
 
-FileSystem *Mount(const char *mount_point,
-                  const char *unix_digest_hash_attribute_name);
+FileSystem *Mount(const char *mount_point);
 void Unmount(FileSystem *fs);
-
-void MaybeSetDigestHashToXAttr(FileSystem *fs, const char *path,
-                                const char *hash);
 
 #endif  // BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_INMEMORY_FS_H_
