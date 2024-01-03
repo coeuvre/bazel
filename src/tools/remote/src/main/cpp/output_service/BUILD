@@ -2,10 +2,8 @@ cc_binary(
     name = "output_service",
     srcs = [
         "common.h",
-        "copy.cc",
-        "copy.h",
-        "fuse.cc",
-        "fuse.h",
+        "impl.cc",
+        "impl.h",
         "inmemory_fs.cc",
         "inmemory_fs.h",
         "main.cc",

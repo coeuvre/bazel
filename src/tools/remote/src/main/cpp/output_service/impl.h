@@ -1,5 +1,5 @@
-#ifndef BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
-#define BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
+#ifndef BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_IMPL_H_
+#define BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_IMPL_H_
 
 #include <mutex>
 #include <string>
@@ -17,14 +17,15 @@ struct Build {
 struct Workspace {
   std::string workspace_id;
   std::string mount_point;
+  std::string unix_digest_hash_attribute_name;
   FileSystem *fs;
   std::string active_build_id;
 };
 
-class FuseRemoteOutputService final
+class RemoteOutputServiceImpl final
     : public remote_output_service::RemoteOutputService::Service {
  public:
-  FuseRemoteOutputService(std::string disk_cache) : disk_cache_(disk_cache) {}
+  RemoteOutputServiceImpl(std::string disk_cache) : disk_cache_(disk_cache) {}
 
   void InstallSignalHandlers();
   void OnExit();
@@ -44,6 +45,11 @@ class FuseRemoteOutputService final
       const remote_output_service::BatchCreateRequest *request,
       google::protobuf::Empty *response) override;
 
+  grpc::Status BatchStat(
+      grpc::ServerContext *context,
+      const remote_output_service::BatchStatRequest *request,
+      remote_output_service::BatchStatResponse *response) override;
+
   grpc::Status FinalizeBuild(
       grpc::ServerContext *context,
       const remote_output_service::FinalizeBuildRequest *request,
@@ -55,4 +61,4 @@ class FuseRemoteOutputService final
   std::mutex mutex_;
 };
 
-#endif  // BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_FUSE_H_
+#endif  // BAZEL_SRC_TOOLS_REMOTE_SRC_MAIN_CPP_OUTPUT_SERVICE_IMPL_H_

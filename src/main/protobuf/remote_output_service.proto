@@ -106,6 +106,12 @@ message StartBuildRequest {
   // service is capable of expanding symbolic links containing absolute
   // paths.
   string output_path = 3;
+
+  string digest_function = 4;
+
+  string unix_digest_hash_attribute_name = 5;
+
+  // TODO: Discuss whether we need fields for RBE authentications.
 }
 
 message InitialOutputPathContents {
@@ -220,8 +226,7 @@ message FileStatus {
   }
 
   message Symlink {
-    // The target of the symbolic link. This field is only set when
-    // BatchStatRequest.include_symlink_target is set.
+    // The target of the symbolic link.
     string target = 1;
     // The time at which the symlink itself were last modified.
     google.protobuf.Timestamp last_modified_time = 2;

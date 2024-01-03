@@ -41,7 +41,9 @@ import com.google.devtools.build.lib.remote.RemoteOutputServiceGrpc.RemoteOutput
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.File;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreateRequest.Symlink;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchStatRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FileStatus;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FinalizeBuildRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
@@ -49,9 +51,11 @@ import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.Execution;
 import com.google.devtools.build.lib.server.FailureDetails.Execution.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.unix.UnixFileSystem;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.BatchStat;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.OutputService;
@@ -61,6 +65,8 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import io.grpc.ManagedChannel;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -157,6 +163,10 @@ public class RemoteOutputService implements OutputService {
     return RemoteOutputServiceGrpc.newBlockingStub(channel);
   }
 
+  private Path getOutputPath() {
+    return env.getDirectories().getOutputPath(env.getWorkspaceName());
+  }
+
   @Override
   public ModifiedFileSet startBuild(
       EventHandler eventHandler, UUID buildId, boolean finalizeActions) throws AbruptExitException {
@@ -164,7 +174,7 @@ public class RemoteOutputService implements OutputService {
     // it ensures the output path is valid. If the previous
     // OutputService redirected the output path to a remote location, we
     // must undo this.
-    Path outputPath = env.getDirectories().getOutputPath(env.getWorkspaceName());
+    Path outputPath = getOutputPath();
     if (outputPath.isSymbolicLink()) {
       try {
         outputPath.delete();
@@ -183,15 +193,20 @@ public class RemoteOutputService implements OutputService {
 
     this.buildId = buildId.toString();
     if (channel != null) {
+      var fs = env.getOutputBase().getFileSystem();
       var stub = newBlockingStub();
       var request =
           StartBuildRequest.newBuilder()
               .setWorkspaceId(workspaceId)
               .setBuildId(this.buildId)
               .setOutputPath(outputPath.toString())
-              .build();
+              .setDigestFunction(fs.getDigestFunction().toString());
+      if (fs instanceof UnixFileSystem) {
+        request.setUnixDigestHashAttributeName(((UnixFileSystem) fs).getHashAttributeName());
+      }
+
       // TODO(chiwang): Handle gRPC error
-      var response = stub.startBuild(request);
+      var response = stub.startBuild(request.build());
       if (response.hasInitialOutputPathContents()) {
         var modifiedFileSet = ModifiedFileSet.builder();
         for (var modifiedPath : response.getInitialOutputPathContents().getModifiedPathsList()) {
@@ -262,7 +277,110 @@ public class RemoteOutputService implements OutputService {
   @Nullable
   @Override
   public BatchStat getBatchStatter() {
+    if (channel != null) {
+      return new BatchStat() {
+        @Override
+        public List<FileStatusWithDigest> batchStat(Iterable<PathFragment> paths)
+            throws IOException, InterruptedException {
+          var request = BatchStatRequest.newBuilder().setBuildId(buildId);
+          var outputPath = getOutputPath();
+          var execRoot = env.getExecRoot();
+          var size = 0;
+          for (var path : paths) {
+            request.addPaths(execRoot.getRelative(path).relativeTo(outputPath).toString());
+            size += 1;
+          }
+          var result = new ArrayList<FileStatusWithDigest>(size);
+          // TODO(chiwang): Handle gRPC error
+          var response = newBlockingStub().batchStat(request.build());
+          if (response.getResponsesList().size() != size) {
+            throw new IOException(
+                "Number of StatResponse doesn't equal to the length of BatchStatRequest.paths");
+          }
+
+          for (var statResponse : response.getResponsesList()) {
+            if (statResponse.hasFileStatus()) {
+              result.add(new RemoteOutputServiceFileStatus(statResponse.getFileStatus()));
+            } else {
+              result.add(null);
+            }
+          }
+
+          return result;
+        }
+      };
+    }
+
     return null;
+  }
+
+  static class RemoteOutputServiceFileStatus implements FileStatusWithDigest {
+    private final FileStatus fileStatus;
+
+    RemoteOutputServiceFileStatus(FileStatus fileStatus) {
+      this.fileStatus = fileStatus;
+    }
+
+    @Override
+    public boolean isFile() {
+      return fileStatus.hasFile();
+    }
+
+    @Override
+    public boolean isDirectory() {
+      return fileStatus.hasDirectory();
+    }
+
+    @Override
+    public boolean isSymbolicLink() {
+      return fileStatus.hasSymlink();
+    }
+
+    @Override
+    public boolean isSpecialFile() {
+      return false;
+    }
+
+    @Override
+    public long getSize() throws IOException {
+      if (fileStatus.hasFile()) {
+        return fileStatus.getFile().getDigest().getSizeBytes();
+      } else if (fileStatus.hasSymlink()) {
+        return fileStatus.getSymlink().getTarget().length();
+      }
+      return 0;
+    }
+
+    @Override
+    public long getLastModifiedTime() throws IOException {
+      if (fileStatus.hasFile()) {
+        return fileStatus.getFile().getLastModifiedTime().getNanos() / 1000000L;
+      } else if (fileStatus.hasSymlink()) {
+        return fileStatus.getSymlink().getLastModifiedTime().getNanos() / 1000000L;
+      } else if (fileStatus.hasDirectory()) {
+        return fileStatus.getDirectory().getLastModifiedTime().getNanos() / 1000000L;
+      }
+      throw new IllegalStateException("Not a valid file status");
+    }
+
+    @Override
+    public long getLastChangeTime() throws IOException {
+      return 0;
+    }
+
+    @Override
+    public long getNodeId() throws IOException {
+      return 0;
+    }
+
+    @Nullable
+    @Override
+    public byte[] getDigest() throws IOException {
+      if (fileStatus.hasFile()) {
+        return DigestUtil.toBinaryDigest(fileStatus.getFile().getDigest());
+      }
+      return null;
+    }
   }
 
   @Override

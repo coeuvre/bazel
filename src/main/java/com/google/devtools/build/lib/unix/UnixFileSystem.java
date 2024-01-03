@@ -583,4 +583,8 @@ public class UnixFileSystem extends AbstractFileSystemWithCustomStat {
       }
     }
   }
+
+  public String getHashAttributeName() {
+    return hashAttributeName;
+  }
 }

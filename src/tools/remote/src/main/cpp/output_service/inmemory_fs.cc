@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "inmemory_fs.h"
 #include "src/tools/remote/src/main/cpp/output_service/common.h"
 #include "third_party/fuse/fuse.h"
 
@@ -42,10 +43,13 @@ struct Node {
   SymlinkNode symlink;
 
   timespec mtime;
+
+  std::string hash;
 };
 
 struct FileSystem {
   std::string mount_point;
+  std::string unix_digest_hash_attribute_name;
   struct fuse *fuse;
   pthread_t thread;
 
@@ -53,13 +57,6 @@ struct FileSystem {
   // An arena for Node
   std::vector<std::unique_ptr<Node>> nodes;
 };
-
-static void *FuseInit(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-  FileSystem *fs = new FileSystem;
-  fs->root.type = kDirectory;
-  fs->root.dir = {};
-  return fs;
-}
 
 static int GetChild(Node *node, const char *name, int count, Node **out_child) {
   if (node->type != kDirectory) {
@@ -334,7 +331,17 @@ static int FuseGetxattr(const char *path, const char *name, char *value,
     return -ENOENT;
   }
 
-  return 0;
+  if (std::string_view(name) == fs->unix_digest_hash_attribute_name &&
+      node->hash.size() > 0) {
+    if (size < node->hash.size()) {
+      return -ERANGE;
+    }
+    std::cerr << path << ": " << node->hash << std::endl;
+    memcpy(value, node->hash.c_str(), size);
+    return node->hash.size();
+  }
+
+  return -ENODATA;
 }
 
 static int FuseOpen(const char *path, struct fuse_file_info *fi) {
@@ -660,7 +667,9 @@ static void *RunFuseEventLoop(void *param_) {
   FileSystem *fs = param->fs;
   const char *mount_point = fs->mount_point.c_str();
 
-  std::cerr << "Mounting fuse at " << mount_point << std::endl;
+  std::cerr << "Mounting fuse at " << fs->mount_point << " ..." << std::endl;
+  std::cerr << "    unix_digest_hash_attribute_name = "
+            << fs->unix_digest_hash_attribute_name << std::endl;
 
   // TODO: In an incremental buidl, the output path might not be clean. How do
   // we handle that case? Delete the dir?
@@ -685,23 +694,13 @@ static void *RunFuseEventLoop(void *param_) {
   return nullptr;
 }
 
-FileSystem *CreateFileSystem() {
+FileSystem *Mount(const char *mount_point,
+                  const char *unix_digest_hash_attribute_name) {
   FileSystem *fs = new FileSystem();
-  fs->root.type = kDirectory;
-  std::cerr << "Creating file system " << fs << std::endl;
-  return fs;
-}
-
-void DeleteFileSystem(FileSystem *fs) {
-  std::cerr << "Deleting file system " << fs << std::endl;
-  Unmount(fs);
-  delete fs;
-}
-
-int Mount(FileSystem *fs, const char *mount_point) {
-  ASSERT(!fs->fuse);
-
   fs->mount_point = std::string(mount_point);
+  fs->unix_digest_hash_attribute_name =
+      std::string(unix_digest_hash_attribute_name);
+  fs->root.type = kDirectory;
 
   fuse_operations op = {
       .getattr = FuseGetattr,
@@ -719,18 +718,16 @@ int Mount(FileSystem *fs, const char *mount_point) {
       .release = FuseRelease,
       .getxattr = FuseGetxattr,
       .readdir = FuseReaddir,
-      .init = FuseInit,
       .access = FuseAccess,
       .create = FuseCreate,
       .utimens = FuseUtime,
   };
   const char *argv[] = {
       "",
-      "-d",  // enable fuse debug
+      // "-d",  // enable fuse debug
   };
   fuse_args args = FUSE_ARGS_INIT(sizeof(argv) / sizeof(*argv), (char **)argv);
-  std::cerr << "Initializing FUSE ..." << std::endl;
-  fs->fuse = fuse_new(&args, &op, sizeof(op), nullptr);
+  fs->fuse = fuse_new(&args, &op, sizeof(op), fs);
   ASSERT(fs->fuse);
 
   std::unique_ptr<RunParam> param = std::make_unique<RunParam>();
@@ -741,29 +738,34 @@ int Mount(FileSystem *fs, const char *mount_point) {
   ASSERT(ret == 0);
   sem_wait(&param->init_sem);
   if (param->has_init_error) {
-    fs->thread = 0;
     fuse_destroy(fs->fuse);
-    fs->fuse = nullptr;
-    return -1;
+    delete fs;
+    return nullptr;
   }
 
-  return 0;
+  return fs;
 }
 
 void Unmount(FileSystem *fs) {
-  if (!fs->fuse) {
-    return;
-  }
-
   std::cerr << "Unmounting fuse at " << fs->mount_point << std::endl;
-
   // Unmount fuse will stop the event loop.
+  ASSERT(fs->fuse);
   fuse_unmount(fs->fuse);
   pthread_join(fs->thread, nullptr);
   fuse_destroy(fs->fuse);
-  fs->thread = 0;
-  fs->fuse = nullptr;
+  delete fs;
+}
 
-  fs->root = {.type = kDirectory};
-  fs->nodes.clear();
+void MaybeSetDigestHashToXAttr(FileSystem *fs, const char *path,
+                                const char *hash) {
+  Node *node;
+  int ret = GetNode(fs, path, nullptr, &node);
+  if (ret != 0) {
+    return;
+  }
+  if (!node) {
+    return;
+  }
+
+  node->hash = std::string(hash);
 }

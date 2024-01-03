@@ -8,8 +8,7 @@
 #include "absl/strings/str_format.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/health_check_service_interface.h"
-#include "src/tools/remote/src/main/cpp/output_service/copy.h"
-#include "src/tools/remote/src/main/cpp/output_service/fuse.h"
+#include "src/tools/remote/src/main/cpp/output_service/impl.h"
 
 ABSL_FLAG(uint16_t, port, 50051, "Server port for the service");
 ABSL_FLAG(std::string, disk_cache, "", "Location of the disk cache");
@@ -17,7 +16,7 @@ ABSL_FLAG(std::string, disk_cache, "", "Location of the disk cache");
 static void RunServer(uint16_t port, std::string disk_cache) {
   std::string server_address = absl::StrFormat("0.0.0.0:%d", port);
 
-  FuseRemoteOutputService service(disk_cache);
+  RemoteOutputServiceImpl service(disk_cache);
   service.InstallSignalHandlers();
 
   grpc::EnableDefaultHealthCheckService(true);
