@@ -45,6 +45,11 @@ class RemoteOutputServiceImpl final
       const remote_output_service::BatchCreateRequest *request,
       google::protobuf::Empty *response) override;
 
+  grpc::Status FinalizeAction(
+      grpc::ServerContext *context,
+      const remote_output_service::FinalizeActionRequest *request,
+      google::protobuf::Empty *response) override;
+
   grpc::Status BatchStat(
       grpc::ServerContext *context,
       const remote_output_service::BatchStatRequest *request,

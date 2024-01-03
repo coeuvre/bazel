@@ -321,6 +321,31 @@ grpc::Status RemoteOutputServiceImpl::BatchCreate(
   return grpc::Status::OK;
 }
 
+grpc::Status RemoteOutputServiceImpl::FinalizeAction(
+    grpc::ServerContext *context,
+    const remote_output_service::FinalizeActionRequest *request,
+    google::protobuf::Empty *response) {
+  auto lock = std::lock_guard(this->mutex_);
+
+  std::cerr << "FinalizeAction("
+            << "build_id = " << request->build_id() << ", ...)" << std::endl;
+
+  auto &build_id = request->build_id();
+  Build *build;
+  Workspace *workspace;
+  auto result = GetActiveBuildAndWorkspace(workspaces_, builds_, build_id,
+                                           &build, &workspace);
+  if (!result.ok()) {
+    return result;
+  }
+
+  for (auto &artifact : request->artifacts()) {
+    std::cerr << "    " << artifact.path() << std::endl;
+  }
+
+  return grpc::Status::OK;
+}
+
 grpc::Status RemoteOutputServiceImpl::BatchStat(
     grpc::ServerContext *context,
     const remote_output_service::BatchStatRequest *request,
@@ -341,26 +366,8 @@ grpc::Status RemoteOutputServiceImpl::BatchStat(
 
   for (auto &path : request->paths()) {
     std::cerr << "    " << path << std::endl;
-    auto res = response->add_responses();
-
-    auto fullpath = build->output_path + "/" + path;
-    struct stat buf;
-    if (stat(fullpath.c_str(), &buf) == 0) {
-      switch (buf.st_mode & S_IFMT) {
-        case S_IFREG: {
-        } break;
-
-        case S_IFLNK: {
-        } break;
-
-        case S_IFDIR: {
-        } break;
-
-        default: {
-          // Ignore other types
-        } break;
-      }
-    }
+    response->add_responses();
+    // TODO: Do the stat
   }
 
   return grpc::Status::OK;

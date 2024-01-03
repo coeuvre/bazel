@@ -29,6 +29,7 @@ import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputMap;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
@@ -44,6 +45,7 @@ import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchCreate
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.BatchStatRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.CleanRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FileStatus;
+import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FinalizeActionRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.FinalizeBuildRequest;
 import com.google.devtools.build.lib.remote.RemoteOutputServiceProto.StartBuildRequest;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
@@ -261,6 +263,49 @@ public class RemoteOutputService implements OutputService {
 
     if (leaseService != null) {
       leaseService.finalizeAction();
+    }
+
+    if (channel != null) {
+      var request = FinalizeActionRequest.newBuilder().setBuildId(buildId);
+      for (var output : action.getOutputs()) {
+        if (outputMetadataStore.artifactOmitted(output)) {
+          continue;
+        }
+
+        if (output.isTreeArtifact()) {
+          var children = outputMetadataStore.getTreeArtifactChildren((SpecialArtifact) output);
+
+          // We may have empty tree artifacts, in this case we just whitelist the tree artifact
+          // output directory without specifying a digest.
+          if (children.isEmpty()) {
+            addArtifact(request, output, outputMetadataStore);
+          } else {
+            for (var child : children) {
+              addArtifact(request, child, outputMetadataStore);
+            }
+          }
+        } else {
+          addArtifact(request, output, outputMetadataStore);
+        }
+      }
+
+      // TODO(chiwang): Handle gRPC error
+      var response = newBlockingStub().finalizeAction(request.build());
+    }
+  }
+
+  private static void addArtifact(
+      FinalizeActionRequest.Builder builder,
+      Artifact artifact,
+      OutputMetadataStore outputMetadataStore)
+      throws IOException, InterruptedException {
+    var artifactBuilder = builder.addArtifactsBuilder();
+    artifactBuilder.setPath(artifact.getExecPathString());
+    if (!artifact.isTreeArtifact()) {
+      var metadata = outputMetadataStore.getOutputMetadata(artifact);
+      if (metadata.getType().isFile()) {
+        artifactBuilder.setDigest(DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize()));
+      }
     }
   }
 

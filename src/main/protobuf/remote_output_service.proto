@@ -54,7 +54,11 @@ service RemoteOutputService {
   // output path.
   rpc BatchCreate(BatchCreateRequest) returns (google.protobuf.Empty);
 
-  // TODO: finalizeAction rpc.
+  // Signal that an action has been completed and a set of files which are
+  // build artifacts has been created. If these paths are changed via FUSE
+  // operations, they should be reported back to Bazel in the next
+  // StartBuildResponse for the same workspace.
+  rpc FinalizeAction(FinalizeActionRequest) returns (google.protobuf.Empty);
 
   // Obtain the status of one or more files, directories or symbolic
   // links that are stored in the input path.
@@ -192,6 +196,16 @@ message BatchCreateRequest {
   // This means that symbolic links are not followed when evaluating
   // path_prefix and OutputDirectory.path.
   repeated Directory directories = 4;
+}
+
+message FinalizeActionRequest {
+  message Artifact {
+    string path = 1;
+    build.bazel.remote.execution.v2.Digest digest = 2;
+  }
+
+  string build_id = 1;
+  repeated Artifact artifacts = 2;
 }
 
 message BatchStatRequest {
