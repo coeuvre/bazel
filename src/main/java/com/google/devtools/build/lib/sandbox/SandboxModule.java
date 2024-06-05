@@ -22,6 +22,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -60,6 +61,8 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -108,6 +111,10 @@ public final class SandboxModule extends BlazeModule {
    * inspect the state of files on failures.
    */
   private boolean shouldCleanupSandboxBase;
+  private static final int POOL_SIZE = Runtime.getRuntime().availableProcessors() * 5;
+  private final ExecutorService inputCreationPool =
+      Executors.newFixedThreadPool(
+          POOL_SIZE, new ThreadFactoryBuilder().setNameFormat("create-input-thread-%d").build());
 
   @Override
   public Iterable<Class<? extends OptionsBase>> getCommandOptions(Command command) {
@@ -342,7 +349,7 @@ public final class SandboxModule extends BlazeModule {
           withFallback(
               cmdEnv,
               LinuxSandboxedStrategy.create(
-                  helpers, cmdEnv, sandboxBase, timeoutKillDelay, treeDeleter));
+                  helpers, cmdEnv, sandboxBase, timeoutKillDelay, treeDeleter, inputCreationPool));
       spawnRunners.add(spawnRunner);
       builder.registerStrategy(
           new LinuxSandboxedStrategy(cmdEnv.getExecRoot(), spawnRunner, executionOptions),

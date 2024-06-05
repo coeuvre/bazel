@@ -60,7 +60,8 @@ public class HardlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpa
         treeDeleter,
         sandboxDebugPath,
         statisticsPath,
-        mnemonic);
+        mnemonic,
+        /* inputCreationPool= */ null);
     this.sandboxDebug = sandboxDebug;
   }
 

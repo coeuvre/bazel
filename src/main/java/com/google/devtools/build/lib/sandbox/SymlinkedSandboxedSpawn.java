@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 
@@ -61,7 +62,8 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
       @Nullable Path statisticsPath,
       @Nullable ImmutableList<String> interactiveDebugArguments,
       String mnemonic,
-      Label targetLabel) {
+      Label targetLabel,
+      ExecutorService inputCreationPool) {
     super(
         sandboxPath,
         sandboxExecRoot,
@@ -73,7 +75,8 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
         treeDeleter,
         sandboxDebugPath,
         statisticsPath,
-        mnemonic);
+        mnemonic,
+        inputCreationPool);
     this.mnemonic = isNullOrEmpty(mnemonic) ? "_NoMnemonic_" : mnemonic;
     this.interactiveDebugArguments = interactiveDebugArguments;
     this.targetLabel = targetLabel;

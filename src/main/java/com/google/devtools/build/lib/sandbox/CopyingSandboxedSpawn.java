@@ -57,7 +57,8 @@ public class CopyingSandboxedSpawn extends AbstractContainerizingSandboxedSpawn 
         treeDeleter,
         sandboxDebugPath,
         statisticsPath,
-        mnemonic);
+        mnemonic,
+        /* inputCreationPool= */ null);
     this.successCallback = successCallback;
   }
 

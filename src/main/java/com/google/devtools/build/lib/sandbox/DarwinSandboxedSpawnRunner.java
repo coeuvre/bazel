@@ -264,7 +264,8 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
         statisticsPath,
         /* interactiveDebugArguments= */ null,
         spawn.getMnemonic(),
-        spawn.getTargetLabel()) {
+        spawn.getTargetLabel(),
+        /* inputCreationPool= */ null) {
       @Override
       public void createFileSystem() throws IOException, InterruptedException {
         super.createFileSystem();

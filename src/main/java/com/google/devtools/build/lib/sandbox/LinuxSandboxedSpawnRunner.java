@@ -65,6 +65,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
@@ -137,6 +138,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final ImmutableSet<Path> knownPathsToMountUnderHermeticTmp;
   private String cgroupsDir;
   private final VirtualCgroupFactory cgroupFactory;
+  private final ExecutorService inputCreationPool;
 
   /**
    * Creates a sandboxed spawn runner that uses the {@code linux-sandbox} tool.
@@ -155,7 +157,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Path inaccessibleHelperFile,
       Path inaccessibleHelperDir,
       Duration timeoutKillDelay,
-      TreeDeleter treeDeleter) {
+      TreeDeleter treeDeleter,
+      ExecutorService inputCreationPool) {
     super(cmdEnv);
     SandboxOptions sandboxOptions = cmdEnv.getOptions().getOptions(SandboxOptions.class);
     this.cgroupFactory =
@@ -180,6 +183,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     this.reporter = cmdEnv.getReporter();
     this.slashTmp = cmdEnv.getRuntime().getFileSystem().getPath("/tmp");
     this.knownPathsToMountUnderHermeticTmp = collectPathsToMountUnderHermeticTmp(cmdEnv);
+    this.inputCreationPool = inputCreationPool;
   }
 
   private ImmutableSet<Path> collectPathsToMountUnderHermeticTmp(CommandEnvironment cmdEnv) {
@@ -380,7 +384,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           statisticsPath,
           makeInteractiveDebugArguments(commandLineBuilder, sandboxOptions),
           spawn.getMnemonic(),
-          spawn.getTargetLabel());
+          spawn.getTargetLabel(),
+          inputCreationPool);
     }
   }
 
