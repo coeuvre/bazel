@@ -111,10 +111,9 @@ public final class SandboxModule extends BlazeModule {
    * inspect the state of files on failures.
    */
   private boolean shouldCleanupSandboxBase;
-  private static final int POOL_SIZE = Runtime.getRuntime().availableProcessors() * 5;
+  //private static final int POOL_SIZE = Runtime.getRuntime().availableProcessors() * 5;
   private final ExecutorService inputCreationPool =
-      Executors.newFixedThreadPool(
-          POOL_SIZE, new ThreadFactoryBuilder().setNameFormat("create-input-thread-%d").build());
+      Executors.newVirtualThreadPerTaskExecutor();
 
   @Override
   public Iterable<Class<? extends OptionsBase>> getCommandOptions(Command command) {
