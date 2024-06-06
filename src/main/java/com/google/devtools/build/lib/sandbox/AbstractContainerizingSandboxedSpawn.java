@@ -18,6 +18,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.concurrent.AbstractQueueVisitor;
+import com.google.devtools.build.lib.concurrent.ErrorClassifier;
 import com.google.devtools.build.lib.exec.TreeDeleter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
@@ -26,19 +28,13 @@ import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -151,11 +147,7 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       SandboxHelpers.createDirectories(dirsToCreate, sandboxExecRoot, /* strict= */ true);
     }
     try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputs")) {
-      if (inputs.getFiles().size() + inputs.getSymlinks().size() > 5000) {
-        createInputs(inputsToCreate, inputs);
-      } else {
-        createInputs2(inputsToCreate, inputs);
-      }
+      createInputs(inputsToCreate, inputs);
     }
     SandboxStash.setLastModified(sandboxPath, System.currentTimeMillis());
   }
@@ -163,105 +155,107 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
   protected void filterInputsAndDirsToCreate(
       Set<PathFragment> inputsToCreate, Set<PathFragment> dirsToCreate)
       throws IOException, InterruptedException {}
+
   private static class WorkEntry {
     Path file1;
     Path file2;
     PathFragment file3;
+
     public enum Op {
       SYMLINK,
       COPY,
       EMPTY
     };
+
     Op op;
   }
-  private void addBatch(List<Future<Void>> futures, List<WorkEntry> currentBatch) {
-    futures.add(inputCreationPool.submit(() -> {
-      for (WorkEntry task : currentBatch) {
-        if (task.op == WorkEntry.Op.COPY) {
-          copyFile(task.file1, task.file2);
-        } else if (task.op == WorkEntry.Op.EMPTY) {
-          FileSystemUtils.createEmptyFile(task.file1);
+
+  private class WorkVisitor extends AbstractQueueVisitor {
+    protected WorkVisitor(ExecutorService executorService) {
+      super(
+          executorService,
+          ExecutorOwnership.SHARED,
+          ExceptionHandlingMode.FAIL_FAST,
+          new ErrorClassifier() {
+            @Override
+            protected ErrorClassification classifyException(Exception e) {
+              return ErrorClassification.CRITICAL;
+            }
+          });
+    }
+
+    void executeBatch(List<WorkEntry> batch) {
+      execute(
+          () -> {
+            try (var s = Profiler.instance().profile("WorkVisitor.executeBatch")) {
+              for (WorkEntry task : batch) {
+                if (task.op == WorkEntry.Op.COPY) {
+                  copyFile(task.file1, task.file2);
+                } else if (task.op == WorkEntry.Op.EMPTY) {
+                  FileSystemUtils.createEmptyFile(task.file1);
+                } else {
+                  task.file1.createSymbolicLink(task.file3);
+                }
+              }
+            } catch (IOException e) {
+              // TODO
+              throw new RuntimeException(e);
+            }
+          });
+    }
+  }
+
+  private void addBatch(
+      WorkVisitor workVisitor,
+      List<PathFragment> inputsToCreate,
+      SandboxInputs inputs,
+      int from,
+      int to) {
+    var batch = new ArrayList<WorkEntry>(to - from);
+    for (int i = from; i < to; ++i) {
+      var fragment = inputsToCreate.get(i);
+
+      Path key = sandboxExecRoot.getRelative(fragment);
+      if (inputs.getFiles().containsKey(fragment)) {
+        Path fileDest = inputs.getFiles().get(fragment);
+        if (fileDest != null) {
+          WorkEntry workEntry = new WorkEntry();
+          workEntry.op = WorkEntry.Op.COPY;
+          workEntry.file1 = fileDest;
+          workEntry.file2 = key;
+          batch.add(workEntry);
         } else {
-          task.file1.createSymbolicLink(task.file3);
+          WorkEntry workEntry = new WorkEntry();
+          workEntry.op = WorkEntry.Op.EMPTY;
+          workEntry.file1 = key;
+          batch.add(workEntry);
+        }
+      } else if (inputs.getSymlinks().containsKey(fragment)) {
+        PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
+        if (symlinkDest != null) {
+          WorkEntry workEntry = new WorkEntry();
+          workEntry.op = WorkEntry.Op.SYMLINK;
+          workEntry.file1 = key;
+          workEntry.file3 = symlinkDest;
+          batch.add(workEntry);
         }
       }
-      return null;
-    }));
+    }
+    workVisitor.executeBatch(batch);
   }
 
   void createInputs(Set<PathFragment> inputsToCreateSet, SandboxInputs inputs)
       throws InterruptedException {
-    //List<PathFragment> inputsToCreate = new ArrayList<>(inputsToCreateSet);
-    //int inputsPerBatch = (int)Math.ceil(inputsToCreate.size() / 100);
-    List<Future<Void>> futures = new ArrayList<>();
+    var workerVisitor = new WorkVisitor(inputCreationPool);
+    var inputsToCreate = new ArrayList(inputsToCreateSet);
 
-    Map<PathFragment, List<PathFragment>> inputsToCreate = new HashMap<>();
-    for (PathFragment file : inputsToCreateSet) {
-      PathFragment parent = file.getParentDirectory();
-      inputsToCreate.putIfAbsent(parent, new ArrayList<>());
-      inputsToCreate.get(parent).add(file);
-    }
+    Collections.shuffle(inputsToCreate);
 
-    //Collections.shuffle(inputsToCreate);
+    var mid = inputsToCreate.size() / 2;
+    addBatch(workerVisitor, inputsToCreate, inputs, 0, mid);
+    addBatch(workerVisitor, inputsToCreate, inputs, mid, inputsToCreate.size());
 
-    List<WorkEntry> currentBatch = new ArrayList<>();
-    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsLoop")) {
-      for (var parentToInputs : inputsToCreate.entrySet()) {
-        if (Thread.interrupted()) {
-          throw new InterruptedException("Interrupted creating inputs");
-        }
-
-        for (PathFragment fragment : parentToInputs.getValue()) {
-          Path key = sandboxExecRoot.getRelative(fragment);
-          if (inputs.getFiles().containsKey(fragment)) {
-            Path fileDest = inputs.getFiles().get(fragment);
-            if (fileDest != null) {
-              WorkEntry workEntry = new WorkEntry();
-              workEntry.op = WorkEntry.Op.COPY;
-              workEntry.file1 = fileDest;
-              workEntry.file2 = key;
-              currentBatch.add(workEntry);
-            } else {
-              WorkEntry workEntry = new WorkEntry();
-              workEntry.op = WorkEntry.Op.EMPTY;
-              workEntry.file1 = key;
-              currentBatch.add(workEntry);
-            }
-          } else if (inputs.getSymlinks().containsKey(fragment)) {
-            PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
-            if (symlinkDest != null) {
-              WorkEntry workEntry = new WorkEntry();
-              workEntry.op = WorkEntry.Op.SYMLINK;
-              workEntry.file1 = key;
-              workEntry.file3 = symlinkDest;
-              currentBatch.add(workEntry);
-            }
-          }
-        }
-        // Divide in batches of at least 100 symlinks. Each directory will appear in the same
-        // batch.
-        if (currentBatch.size() > 100) {
-          addBatch(futures, currentBatch);
-          currentBatch = new ArrayList<>();
-        }
-      }
-      if (!currentBatch.isEmpty()) {
-        addBatch(futures, currentBatch);
-      }
-    }
-    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsFutures")) {
-      int i = 1;
-      for (Future<Void> future : futures) {
-        try {
-          //System.out.println("[" + i++ + "] Before future get:" + System.currentTimeMillis());
-          future.get();
-          //System.out.println("[" + i++ + "] After future get:" + System.currentTimeMillis());
-        } catch (ExecutionException e) {
-          throw new RuntimeException(e);
-        }
-      }
-    }
-    //System.out.println("Futures: " + futures.size());
+    workerVisitor.awaitQuiescence(false);
   }
 
   /**
