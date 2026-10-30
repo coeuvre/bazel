@@ -2006,9 +2006,37 @@ public class RemoteExecutionService {
       throws ExecException, InterruptedException {
     try (SilentCloseable c =
         Profiler.instance().profile(ProfilerTask.UPLOAD_TIME, "upload outputs")) {
+      ByteString diskCacheActionResultBytes = spawnResult.getDiskCacheActionResultBytes();
+      boolean canReuseDiskCacheBlobs =
+          diskCacheActionResultBytes != null
+              && !force
+              && !action.getSpawn().getResourceOwner().mayModifySpawnOutputsAfterExecution();
+      if (canReuseDiskCacheBlobs && useDiskCache() && !useRemoteCache()) {
+        ActionResult actionResult =
+            ActionResult.parseFrom(
+                diskCacheActionResultBytes, ExtensionRegistry.getEmptyRegistry());
+        if (actionResult.getExitCode() == 0 && action.getActionKey() != null) {
+          try (SilentCloseable s =
+              Profiler.instance().profile(ProfilerTask.UPLOAD_TIME, "upload action result")) {
+            getFromFuture(
+                combinedCache.uploadActionResult(
+                    action
+                        .getRemoteActionExecutionContext()
+                        .withWriteCachePolicy(CachePolicy.DISK_CACHE_ONLY),
+                    action.getActionKey(),
+                    actionResult));
+          }
+        }
+        return;
+      }
       UploadManifest manifest = buildUploadManifest(action, spawnResult);
       var unused =
-          manifest.upload(action.getRemoteActionExecutionContext(), combinedCache, reporter, force);
+          manifest.upload(
+              action.getRemoteActionExecutionContext(),
+              combinedCache,
+              reporter,
+              force,
+              /* skipDiskCacheCasUpload= */ canReuseDiskCacheBlobs);
     } catch (IOException e) {
       reportUploadError(e);
     } finally {

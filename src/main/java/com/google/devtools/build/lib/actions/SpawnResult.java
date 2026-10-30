@@ -280,6 +280,17 @@ public interface SpawnResult {
     return null;
   }
 
+  /**
+   * Returns a serialized {@code build.bazel.remote.execution.v2.ActionResult} whose referenced
+   * output blobs, directory {@code Tree}s, and stdout/stderr blobs are already present in the
+   * configured {@code --disk_cache} CAS, allowing {@code RemoteExecutionService} to skip redundant
+   * output hashing and CAS uploads into the disk cache.
+   */
+  @Nullable
+  default ByteString getDiskCacheActionResultBytes() {
+    return null;
+  }
+
   /** Basic implementation of {@link SpawnResult}. */
   @Immutable
   @ThreadSafe
@@ -308,6 +319,7 @@ public interface SpawnResult {
 
     private final boolean remote;
     @Nullable private final Digest digest;
+    @Nullable private final ByteString diskCacheActionResultBytes;
 
     SimpleSpawnResult(Builder builder) {
       this.exitCode = builder.exitCode;
@@ -338,6 +350,7 @@ public interface SpawnResult {
       this.inMemoryContents = builder.inMemoryContents;
       this.remote = builder.remote;
       this.digest = builder.digest;
+      this.diskCacheActionResultBytes = builder.diskCacheActionResultBytes;
     }
 
     @Override
@@ -477,6 +490,12 @@ public interface SpawnResult {
     public Digest getDigest() {
       return digest;
     }
+
+    @Nullable
+    @Override
+    public ByteString getDiskCacheActionResultBytes() {
+      return diskCacheActionResultBytes;
+    }
   }
 
   /**
@@ -614,6 +633,12 @@ public interface SpawnResult {
     public Digest getDigest() {
       return delegate.getDigest();
     }
+
+    @Override
+    @Nullable
+    public ByteString getDiskCacheActionResultBytes() {
+      return delegate.getDiskCacheActionResultBytes();
+    }
   }
 
   /** Builder class for {@link SpawnResult}. */
@@ -642,6 +667,7 @@ public interface SpawnResult {
 
     private boolean remote;
     private Digest digest;
+    @Nullable private ByteString diskCacheActionResultBytes;
 
     public SpawnResult build() {
       Preconditions.checkArgument(!runnerName.isEmpty());
@@ -792,6 +818,13 @@ public interface SpawnResult {
     @CanIgnoreReturnValue
     public Builder setDigest(Digest digest) {
       this.digest = digest;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder setDiskCacheActionResultBytes(
+        @Nullable ByteString diskCacheActionResultBytes) {
+      this.diskCacheActionResultBytes = diskCacheActionResultBytes;
       return this;
     }
 

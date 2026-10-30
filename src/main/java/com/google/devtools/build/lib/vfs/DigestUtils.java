@@ -191,6 +191,20 @@ public class DigestUtils {
   }
 
   /**
+   * Injects a precomputed digest for {@code path} into the global digest cache if enabled.
+   *
+   * <p>The entry is keyed by {@code status} ({@code ctime}, {@code mtime}, {@code nodeId}) so any
+   * subsequent modification to the file automatically invalidates the cached digest.
+   */
+  public static void injectDigest(
+      Path path, @Nullable FileStatus status, @Nullable byte[] digest) throws IOException {
+    DigestCache cache = globalCache;
+    if (cache != null && status != null && digest != null) {
+      cache.cache().put(path.asFragment(), new CachedDigest(status, digest));
+    }
+  }
+
+  /**
    * Combines two digests into one such that swapping the arguments results in the same result. May
    * clobber either argument.
    */

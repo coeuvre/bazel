@@ -68,9 +68,9 @@ import java.util.stream.Stream;
 
 /** Abstract common ancestor for sandbox spawn runners implementing the common parts. */
 abstract class AbstractSandboxSpawnRunner implements SpawnRunner {
-  private static final int LOCAL_EXEC_ERROR = -1;
+  protected static final int LOCAL_EXEC_ERROR = -1;
 
-  private record SubprocessResult(
+  protected record SubprocessResult(
       int exitCode,
       Status status,
       Duration wallTime,
@@ -229,6 +229,7 @@ abstract class AbstractSandboxSpawnRunner implements SpawnRunner {
       if (subprocessResult.statisticsPath() != null) {
         spawnResultBuilder.setResourceUsageFromProto(subprocessResult.statisticsPath());
       }
+      spawnResultBuilder.setDiskCacheActionResultBytes(sandbox.getDiskCacheActionResultBytes());
       return spawnResultBuilder.build();
     } finally {
       if (!sandboxOptions.getSandboxDebug()) {
@@ -244,7 +245,7 @@ abstract class AbstractSandboxSpawnRunner implements SpawnRunner {
       Spawn originalSpawn, SandboxedSpawn sandbox, SpawnExecutionContext context)
       throws IOException {}
 
-  private String makeFailureMessage(Spawn originalSpawn, SandboxedSpawn sandbox) {
+  protected String makeFailureMessage(Spawn originalSpawn, SandboxedSpawn sandbox) {
     if (sandboxOptions.getSandboxDebug()) {
       return CommandFailureUtils.describeCommandFailure(
           /* verboseFailures= */ true,
@@ -260,9 +261,9 @@ abstract class AbstractSandboxSpawnRunner implements SpawnRunner {
     }
   }
 
-  private SubprocessResult run(
+  protected SubprocessResult run(
       Spawn originalSpawn, SandboxedSpawn sandbox, SpawnExecutionContext context)
-      throws IOException, InterruptedException {
+      throws IOException, ExecException, InterruptedException {
     FileOutErr outErr = context.getFileOutErr();
     Duration timeout = context.getTimeout();
 

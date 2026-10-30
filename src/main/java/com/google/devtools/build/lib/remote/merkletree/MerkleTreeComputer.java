@@ -166,19 +166,34 @@ public final class MerkleTreeComputer {
       Executors.newThreadPerTaskExecutor(
           Thread.ofVirtual().name("merkle-tree-upload-", 0).factory());
 
-  // Keyed on FileArtifactValue-like object describing the contents of the subtree. Since weak keys
-  // imply identity comparison, the key type can't be just FileArtifactValue as not every aggregate
-  // input has a FileArtifactValue that is retained alongside its contents.
-  private static final Cache<Object, MerkleTree.RootOnly> persistentToolSubTreeCache =
-      Caffeine.newBuilder().weakKeys().build();
-  private static final Cache<Object, MerkleTree.RootOnly> persistentNonToolSubTreeCache =
-      Caffeine.newBuilder().weakKeys().build();
+  private static final class SubTreeCaches {
+    // Keyed on FileArtifactValue-like object describing the contents of the subtree. Since weak
+    // keys imply identity comparison, the key type can't be just FileArtifactValue as not every
+    // aggregate input has a FileArtifactValue that is retained alongside its contents.
+    final Cache<Object, MerkleTree.RootOnly> tool = Caffeine.newBuilder().weakKeys().build();
+    final Cache<Object, MerkleTree.RootOnly> nonTool = Caffeine.newBuilder().weakKeys().build();
+    @Nullable volatile Scrubber lastScrubber;
 
-  // @GuardedBy("MerkleTreeComputer.class") for writes, reads use double-checked locking.
-  @Nullable private static volatile Scrubber lastScrubber;
+    void ensureScrubber(@Nullable Scrubber scrubber) {
+      if (!Objects.equals(scrubber, lastScrubber)) {
+        synchronized (this) {
+          if (!Objects.equals(scrubber, lastScrubber)) {
+            tool.invalidateAll();
+            nonTool.invalidateAll();
+            lastScrubber = scrubber;
+          }
+        }
+      }
+    }
+  }
+
+  private static final SubTreeCaches DEFAULT_SUB_TREE_CACHES = new SubTreeCaches();
+  private static final Cache<Object, SubTreeCaches> SCOPED_SUB_TREE_CACHES =
+      Caffeine.newBuilder().weakKeys().build();
 
   private final DigestUtil digestUtil;
   @Nullable private final MerkleTreeUploader merkleTreeUploader;
+  private final SubTreeCaches subTreeCaches;
   private final String buildRequestId;
   private final String commandId;
   private final String workspaceName;
@@ -194,8 +209,28 @@ public final class MerkleTreeComputer {
       String buildRequestId,
       String commandId,
       String workspaceName) {
+    this(
+        digestUtil,
+        remoteExecutionCache,
+        /* uploadScope= */ null,
+        buildRequestId,
+        commandId,
+        workspaceName);
+  }
+
+  public MerkleTreeComputer(
+      DigestUtil digestUtil,
+      @Nullable MerkleTreeUploader remoteExecutionCache,
+      @Nullable Object uploadScope,
+      String buildRequestId,
+      String commandId,
+      String workspaceName) {
     this.digestUtil = digestUtil;
     this.merkleTreeUploader = remoteExecutionCache;
+    this.subTreeCaches =
+        uploadScope == null
+            ? DEFAULT_SUB_TREE_CACHES
+            : SCOPED_SUB_TREE_CACHES.get(uploadScope, unused -> new SubTreeCaches());
     this.buildRequestId = buildRequestId;
     this.commandId = commandId;
     this.workspaceName = workspaceName;
@@ -328,16 +363,8 @@ public final class MerkleTreeComputer {
       BlobPolicy blobPolicy)
       throws IOException, InterruptedException, LostInputsExecException {
     // The scrubber is a per-invocation setting and invocations do not overlap, so it can be tracked
-    // in a static variable.
-    if (!Objects.equals(scrubber, lastScrubber)) {
-      synchronized (MerkleTreeComputer.class) {
-        if (!Objects.equals(scrubber, lastScrubber)) {
-          persistentToolSubTreeCache.invalidateAll();
-          persistentNonToolSubTreeCache.invalidateAll();
-          lastScrubber = scrubber;
-        }
-      }
-    }
+    // per uploadScope cache.
+    subTreeCaches.ensureScrubber(scrubber);
     PathMapper pathMapper = spawn.getPathMapper();
     SpawnInputs inputFiles = spawn.getInputFiles();
     // Add output directories to inputs so that they are created as empty directories by the
@@ -1003,7 +1030,7 @@ public final class MerkleTreeComputer {
       ArtifactPathResolver artifactPathResolver,
       @Nullable RemoteActionExecutionContext remoteActionExecutionContext,
       BlobPolicy blobPolicy) {
-    var persistentCache = isTool ? persistentToolSubTreeCache : persistentNonToolSubTreeCache;
+    var persistentCache = isTool ? subTreeCaches.tool : subTreeCaches.nonTool;
     if (blobPolicy == BlobPolicy.KEEP_AND_REUPLOAD) {
       persistentCache.invalidate(cacheKey);
     } else {

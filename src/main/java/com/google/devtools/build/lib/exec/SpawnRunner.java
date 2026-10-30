@@ -31,6 +31,7 @@ import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.LostInputsActionExecutionException;
 import com.google.devtools.build.lib.actions.LostInputsExecException;
+import com.google.devtools.build.lib.actions.OutputMetadataStore;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.Spawns;
@@ -289,6 +290,16 @@ public interface SpawnRunner {
     /** Returns the environment of the Bazel client. */
     ImmutableMap<String, String> getClientEnv();
 
+    /**
+     * Returns the {@link OutputMetadataStore} for the action if available, allowing spawn runners
+     * that already know output digests (e.g. from a local REAPI sandbox backend) to inject output
+     * metadata directly.
+     */
+    @Nullable
+    default OutputMetadataStore getOutputMetadataStore() {
+      return null;
+    }
+
     /** Returns whether caches for this spawn should be busted. */
     default boolean bustCaches() {
       return false;
@@ -366,6 +377,12 @@ public interface SpawnRunner {
     @Override
     public final ImmutableMap<String, String> getClientEnv() {
       return actionExecutionContext.getClientEnv();
+    }
+
+    @Nullable
+    @Override
+    public final OutputMetadataStore getOutputMetadataStore() {
+      return actionExecutionContext.getOutputMetadataStore();
     }
   }
 

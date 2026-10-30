@@ -622,12 +622,34 @@ public class UploadManifest {
       ExtendedEventHandler reporter,
       boolean force)
       throws IOException, InterruptedException, ExecException {
+    return upload(
+        context, combinedCache, reporter, force, /* skipDiskCacheCasUpload= */ false);
+  }
+
+  /**
+   * Uploads outputs and action result (if exit code is 0) to the remote and/or disk cache.
+   *
+   * @param force whether to upload blobs to the remote cache even if {@code combinedCache} has
+   *     already completed uploads of them, e.g. because they may have been evicted since
+   * @param skipDiskCacheCasUpload whether to skip uploading output CAS blobs to the local disk
+   *     cache because they were already populated in {@code <disk_cache>/cas/} by the local REAPI
+   *     sandbox backend
+   */
+  public ActionResult upload(
+      RemoteActionExecutionContext context,
+      CombinedCache combinedCache,
+      ExtendedEventHandler reporter,
+      boolean force,
+      boolean skipDiskCacheCasUpload)
+      throws IOException, InterruptedException, ExecException {
     ActionExecutionMetadata action = context.getSpawnOwner();
     var allDigests = Sets.union(digestToBlobs.keySet(), digestToFile.keySet()).immutableCopy();
 
     var uploadFutures = new ArrayList<ListenableFuture<Void>>();
 
-    if (combinedCache.hasDiskCache() && context.getWriteCachePolicy().allowDiskCache()) {
+    if (!skipDiskCacheCasUpload
+        && combinedCache.hasDiskCache()
+        && context.getWriteCachePolicy().allowDiskCache()) {
       RemoteActionExecutionContext diskContext =
           context.withWriteCachePolicy(CachePolicy.DISK_CACHE_ONLY);
       for (var digest : allDigests) {

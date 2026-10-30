@@ -20,9 +20,11 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ListMultimap;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.events.Event;
@@ -54,8 +56,12 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 
 /** This module provides the Sandbox spawn strategy. */
@@ -89,6 +95,9 @@ public final class SandboxModule extends BlazeModule {
    * builds.
    */
   private final Set<SpawnRunner> spawnRunners = new HashSet<>();
+
+  /** Persistent local REAPI sandbox backend clients keyed by backend name across builds. */
+  private final Map<String, SandboxBackendClient> sandboxBackendClients = new ConcurrentHashMap<>();
 
   /**
    * Handler to process expensive tree deletions, potentially outside of the critical path.
@@ -330,14 +339,136 @@ public final class SandboxModule extends BlazeModule {
           "windows-sandbox");
     }
 
+    boolean reapiSandboxSupported =
+        registerSandboxBackends(cmdEnv, options, executionOptions, builder);
+
     if (processWrapperSupported
         || linuxSandboxSupported
         || darwinSandboxSupported
-        || windowsSandboxSupported) {
+        || windowsSandboxSupported
+        || reapiSandboxSupported) {
       // This makes the "sandboxed" strategy the default Spawn strategy, unless it is
       // overridden by a later BlazeModule.
       builder.setDefaultStrategies(ImmutableList.of("sandboxed"));
     }
+  }
+
+  private boolean registerSandboxBackends(
+      CommandEnvironment cmdEnv,
+      SandboxOptions options,
+      ExecutionOptions executionOptions,
+      SpawnStrategyRegistry.Builder builder)
+      throws IOException {
+    Map<String, String> configuredBackends = new LinkedHashMap<>();
+    for (Map.Entry<String, String> entry : options.getSandboxBackends()) {
+      String name = entry.getKey();
+      String spec = entry.getValue();
+      if (name.isEmpty()
+          || spec.isEmpty()
+          || name.equals(".")
+          || name.equals("..")
+          || name.indexOf('/') >= 0
+          || name.indexOf('\\') >= 0
+          || name.indexOf('\0') >= 0) {
+        throw new IOException(
+            "Invalid --experimental_sandbox_backend='"
+                + name
+                + "="
+                + spec
+                + "': <name> must be a non-empty single path segment and <spec> must be"
+                + " non-empty");
+      }
+      configuredBackends.put(name, spec);
+    }
+
+    ListMultimap<String, String> backendOpts = ArrayListMultimap.create();
+    for (Map.Entry<String, String> entry : options.getSandboxBackendOpts()) {
+      String name = entry.getKey();
+      if (!configuredBackends.containsKey(name)) {
+        throw new IOException(
+            "Unknown sandbox backend '"
+                + name
+                + "' in --experimental_sandbox_backend_opt; register it first via"
+                + " --experimental_sandbox_backend="
+                + name
+                + "=<spec>");
+      }
+      backendOpts.put(name, entry.getValue());
+    }
+
+    boolean legacySandboxedRegistered = false;
+    Set<String> activeSessionKeys = new HashSet<>(configuredBackends.keySet());
+    String legacyTarget = options.getLocalReapiSandbox();
+    if (!legacyTarget.isEmpty()) {
+      activeSessionKeys.add("reapi-sandbox");
+    }
+
+    // Shut down any clients that were removed since the previous command.
+    Iterator<Map.Entry<String, SandboxBackendClient>> it =
+        sandboxBackendClients.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry<String, SandboxBackendClient> existing = it.next();
+      if (!activeSessionKeys.contains(existing.getKey())) {
+        existing.getValue().close();
+        it.remove();
+      }
+    }
+
+    if (!legacyTarget.isEmpty()) {
+      SandboxBackendClient client =
+          getOrUpdateSandboxBackendClient(
+              "reapi-sandbox", legacyTarget, ImmutableList.of(), cmdEnv);
+      SandboxBackendSpawnRunner spawnRunner =
+          new SandboxBackendSpawnRunner(
+              cmdEnv, sandboxBase, "reapi-sandbox", client, /* ownsClient= */ false);
+      spawnRunners.add(spawnRunner);
+      builder.registerStrategy(
+          new SandboxBackendStrategy(spawnRunner, executionOptions), "sandboxed", "reapi-sandbox");
+      legacySandboxedRegistered = client.isAvailable();
+    }
+
+    for (Map.Entry<String, String> entry : configuredBackends.entrySet()) {
+      String name = entry.getKey();
+      String spec = entry.getValue();
+      List<String> opts = backendOpts.get(name);
+      SandboxBackendClient client = getOrUpdateSandboxBackendClient(name, spec, opts, cmdEnv);
+      SandboxBackendSpawnRunner spawnRunner =
+          new SandboxBackendSpawnRunner(cmdEnv, sandboxBase, name, client, /* ownsClient= */ false);
+      spawnRunners.add(spawnRunner);
+      builder.registerStrategy(
+          new SandboxBackendStrategy(spawnRunner, executionOptions),
+          SandboxBackendSpawnRunner.STRATEGY_PREFIX + name);
+    }
+
+    return legacySandboxedRegistered;
+  }
+
+  private SandboxBackendClient getOrUpdateSandboxBackendClient(
+      String name, String spec, List<String> opts, CommandEnvironment cmdEnv) {
+    SandboxBackendClient existing = sandboxBackendClients.get(name);
+    if (existing != null && !existing.matchesConfig(spec, opts, cmdEnv)) {
+      existing.close();
+      existing = null;
+    }
+    if (existing == null) {
+      existing = SandboxBackendClient.create(name, spec, opts, cmdEnv);
+      sandboxBackendClients.put(name, existing);
+    } else {
+      existing.verifyDiskCacheDirectory();
+    }
+    return existing;
+  }
+
+  // Package-private for testing
+  Map<String, SandboxBackendClient> getSandboxBackendClients() {
+    return sandboxBackendClients;
+  }
+
+  private void closeAllSandboxBackendClients() {
+    for (SandboxBackendClient client : sandboxBackendClients.values()) {
+      client.close();
+    }
+    sandboxBackendClients.clear();
   }
 
   @Nullable
@@ -371,6 +502,7 @@ public final class SandboxModule extends BlazeModule {
 
   @Subscribe
   public void cleanStarting(@SuppressWarnings("unused") CleanStartingEvent event) {
+    closeAllSandboxBackendClients();
     if (sandboxBase != null) {
       SandboxStash.clean(treeDeleter, sandboxBase);
     }
@@ -565,6 +697,7 @@ public final class SandboxModule extends BlazeModule {
   }
 
   private void commonShutdown() {
+    closeAllSandboxBackendClients();
     // Try to clean up as much garbage as possible, if there happens to be any. This will delay
     // server termination but it's the nice thing to do. If the user gets impatient, they can always
     // kill us again.

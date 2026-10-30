@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.sandbox;
 
 import com.google.devtools.build.lib.util.DescribableExecutionUnit;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.Optional;
 import javax.annotation.Nullable;
@@ -72,5 +73,14 @@ interface SandboxedSpawn extends DescribableExecutionUnit {
    */
   default Optional<String> getInteractiveDebugInstructions() {
     return Optional.empty();
+  }
+
+  /**
+   * Returns a serialized {@code ActionResult} whose referenced output blobs are already present in
+   * the configured {@code --disk_cache} CAS, or {@code null} if not applicable.
+   */
+  @Nullable
+  default ByteString getDiskCacheActionResultBytes() {
+    return null;
   }
 }

@@ -24,6 +24,7 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.Converter;
+import com.google.devtools.common.options.Converters.AssignmentConverter;
 import com.google.devtools.common.options.Converters.BooleanConverter;
 import com.google.devtools.common.options.Converters.RegexPatternConverter;
 import com.google.devtools.common.options.Converters.TriStateConverter;
@@ -326,7 +327,7 @@ public abstract class SandboxOptions extends OptionsBase {
 
   @Option(
       name = "experimental_inmemory_sandbox_stashes",
-      defaultValue = "false",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
       effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS, OptionEffectTag.EXECUTION},
       help =
@@ -404,6 +405,45 @@ public abstract class SandboxOptions extends OptionsBase {
           "If true, a loopback device will be set up in the linux-sandbox network namespace for"
               + " local actions.")
   public abstract boolean getSandboxEnableLoopbackDevice();
+
+  @Option(
+      name = "experimental_local_reapi_sandbox",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Connect to a local REAPI sandbox daemon at the specified gRPC target (for example,"
+              + " unix:///path/to/socket, localhost:port, or inprocess:<name>) to execute"
+              + " sandboxed actions using the Remote Execution API.")
+  public abstract String getLocalReapiSandbox();
+
+  @Option(
+      name = "experimental_sandbox_backend",
+      defaultValue = "null",
+      converter = AssignmentConverter.class,
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Registers a named local REAPI sandbox backend in the form '<name>=<spec>', where <spec>"
+              + " is either an executable path/name of a sandbox daemon binary to launch as"
+              + " '<binary> serve --socket=<path>' or a direct gRPC target ('unix:...', "
+              + "'localhost:...', or 'inprocess:...'). The strategy is registered under the"
+              + " command-line identifier 'sandbox_backend:<name>'.")
+  public abstract List<Map.Entry<String, String>> getSandboxBackends();
+
+  @Option(
+      name = "experimental_sandbox_backend_opt",
+      defaultValue = "null",
+      converter = AssignmentConverter.class,
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Passes an extra command-line argument to the managed sandbox backend binary registered"
+              + " under <name> in the form '<name>=<arg>'. May be specified multiple times;"
+              + " arguments are passed in order.")
+  public abstract List<Map.Entry<String, String>> getSandboxBackendOpts();
 
   /** Converter for the number of threads used for asynchronous tree deletion. */
   public static final class AsyncTreeDeletesConverter extends ResourceConverter.IntegerConverter {
